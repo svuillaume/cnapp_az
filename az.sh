@@ -7,8 +7,9 @@
 # Usage:
 #   ./forticnapp-preflight.sh <APP-ID> [SUBSCRIPTION-ID]
 #
-# Example:
-#   ./forticnapp-preflight.sh <CLIENT-ID> <SUBSCRIPTION-ID>
+# Output:
+#   Console preflight results
+#   ./preflight.json
 #
 # READ-ONLY:
 #   This script does NOT modify Azure or Entra ID.
@@ -18,6 +19,8 @@ set -u
 
 APP_ID="${1:-}"
 SUB_ID="${2:-}"
+
+REPORT_FILE="preflight.json"
 
 # ============================================================
 # COLORS / STATUS
@@ -39,8 +42,19 @@ PASS_COUNT=0
 FAIL_COUNT=0
 WARN_COUNT=0
 
-# Missing required items
 REQUIRED_MISSING=()
+
+# JSON values
+USER_APP_ADMIN=false
+USER_PRA=false
+APP_OWNER=false
+APP_APP_ADMIN=false
+APP_PRA=false
+APP_DIRECTORY_READER=false
+
+# ============================================================
+# FUNCTIONS
+# ============================================================
 
 pass() {
     echo -e "  ${OK} $1"
@@ -180,6 +194,7 @@ if [[ -n "$USER_ID" && -n "$APP_ADMIN_ROLE_ID" ]]; then
         -o tsv 2>/dev/null || echo "0")
 
     if [[ "$USER_APP_ADMIN" -gt 0 ]]; then
+        USER_APP_ADMIN=true
         pass "Application Administrator"
     else
         fail "Application Administrator"
@@ -212,6 +227,7 @@ if [[ -n "$USER_ID" && -n "$PRA_ROLE_ID" ]]; then
         -o tsv 2>/dev/null || echo "0")
 
     if [[ "$USER_PRA" -gt 0 ]]; then
+        USER_PRA=true
         pass "Privileged Role Administrator"
     else
         fail "Privileged Role Administrator"
@@ -308,6 +324,7 @@ OWNER_COUNT=$(az role assignment list \
     -o tsv 2>/dev/null || echo "0")
 
 if [[ "$OWNER_COUNT" -gt 0 ]]; then
+    APP_OWNER=true
     pass "Owner on target subscription"
 else
     fail "Owner on target subscription"
@@ -329,6 +346,7 @@ if [[ -n "$APP_ADMIN_ROLE_ID" ]]; then
         -o tsv 2>/dev/null || echo "0")
 
     if [[ "$APP_ADMIN_COUNT" -gt 0 ]]; then
+        APP_APP_ADMIN=true
         pass "Application Administrator"
     else
         fail "Application Administrator"
@@ -355,6 +373,7 @@ if [[ -n "$PRA_ROLE_ID" ]]; then
         -o tsv 2>/dev/null || echo "0")
 
     if [[ "$PRA_COUNT" -gt 0 ]]; then
+        APP_PRA=true
         pass "Privileged Role Administrator"
     else
         fail "Privileged Role Administrator"
@@ -387,6 +406,7 @@ if [[ -n "$DR_ROLE_ID" ]]; then
         -o tsv 2>/dev/null || echo "0")
 
     if [[ "$DR_COUNT" -gt 0 ]]; then
+        APP_DIRECTORY_READER=true
         pass "Directory Reader"
         info "Entra user/group/app discovery is enabled."
     else
@@ -425,7 +445,101 @@ else
 fi
 
 # ============================================================
-# 13. FINAL SUMMARY
+# 13. GENERATE JSON REPORT
+# ============================================================
+
+TIMESTAMP=$(date --iso-8601=seconds 2>/dev/null || date)
+
+if [[ "$FAIL_COUNT" -eq 0 ]]; then
+    OVERALL_STATUS="PASSED"
+else
+    OVERALL_STATUS="FAILED"
+fi
+
+# Build missing JSON array safely
+MISSING_JSON="[]"
+
+if [[ ${#REQUIRED_MISSING[@]} -gt 0 ]]; then
+    MISSING_JSON=$(printf '%s\n' "${REQUIRED_MISSING[@]}" | jq -R . | jq -s .)
+fi
+
+jq -n \
+    --arg timestamp "$TIMESTAMP" \
+    --arg status "$OVERALL_STATUS" \
+    --arg tenant_id "$TENANT_ID" \
+    --arg subscription_id "$SUB_ID" \
+    --arg subscription_name "$SUB_NAME" \
+    --arg user "$USER_NAME" \
+    --arg user_object_id "${USER_ID:-}" \
+    --arg app_display_name "$APP_DISPLAY_NAME" \
+    --arg client_id "$APP_ID" \
+    --arg app_object_id "$APP_OBJECT_ID" \
+    --arg sp_object_id "$SP_OBJECT_ID" \
+    --arg sp_name "$SP_NAME" \
+    --argjson user_application_administrator "$USER_APP_ADMIN" \
+    --argjson user_privileged_role_administrator "$USER_PRA" \
+    --argjson app_azure_owner "$APP_OWNER" \
+    --argjson app_application_administrator "$APP_APP_ADMIN" \
+    --argjson app_privileged_role_administrator "$APP_PRA" \
+    --argjson app_directory_reader "$APP_DIRECTORY_READER" \
+    --argjson successful_checks "$PASS_COUNT" \
+    --argjson failed_checks "$FAIL_COUNT" \
+    --argjson warnings "$WARN_COUNT" \
+    --argjson missing "$MISSING_JSON" \
+'
+{
+  timestamp: $timestamp,
+  status: $status,
+
+  azure: {
+    tenant_id: $tenant_id,
+    subscription_id: $subscription_id,
+    subscription_name: $subscription_name
+  },
+
+  entra_id_user: {
+    user: $user,
+    object_id: $user_object_id,
+
+    required_roles: {
+      application_administrator: $user_application_administrator,
+      privileged_role_administrator: $user_privileged_role_administrator
+    }
+  },
+
+  forticnapp_app_registration: {
+    display_name: $app_display_name,
+    client_id: $client_id,
+    application_object_id: $app_object_id,
+
+    service_principal: {
+      name: $sp_name,
+      object_id: $sp_object_id
+    },
+
+    required_permissions: {
+      azure_owner: $app_azure_owner,
+      application_administrator: $app_application_administrator,
+      privileged_role_administrator: $app_privileged_role_administrator
+    },
+
+    optional_permissions: {
+      directory_reader: $app_directory_reader
+    }
+  },
+
+  summary: {
+    successful_checks: $successful_checks,
+    failed_checks: $failed_checks,
+    warnings: $warnings
+  },
+
+  required_missing: $missing
+}
+' > "$REPORT_FILE"
+
+# ============================================================
+# 14. FINAL SUMMARY
 # ============================================================
 
 echo
@@ -464,13 +578,24 @@ echo "    Application Administrator"
 echo "    Privileged Role Administrator"
 
 echo
+echo "------------------------------------------------------------"
+echo " JSON REPORT"
+echo "------------------------------------------------------------"
+
+if [[ -f "$REPORT_FILE" ]]; then
+    echo -e "  ${GREEN}✔ Generated:${RESET} $REPORT_FILE"
+else
+    echo -e "  ${RED}✘ Failed to generate:${RESET} $REPORT_FILE"
+fi
+
+echo
 echo "============================================================"
 
 if [[ "$FAIL_COUNT" -eq 0 ]]; then
 
     echo
     echo -e "${GREEN}${BOLD}✔ PRE-FLIGHT PASSED${RESET}"
-    echo -e "${GREEN}All required checks passed.${RESET}"
+    echo -e "${GREEN}All required FortiCNAPP prerequisites are present.${RESET}"
 
 else
 
