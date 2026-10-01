@@ -1,438 +1,365 @@
-FortiCNAPP Terraform Provider Authentication
+<div align="center">
 
-The FortiCNAPP Terraform provider (lacework) supports multiple authentication methods for Terraform deployments.
+# 🔐 FortiCNAPP Terraform Provider — Authentication Guide
 
-This README covers three authentication options:
+**Securely authenticate the `lacework` Terraform provider for FortiCNAPP deployments**
 
-1. .lacework.toml — Lacework/FortiCNAPP CLI configuration
-2. LW_* environment variables — direct provider authentication
-3. Terraform variables — TF_VAR_* or terraform.tfvars
+![Terraform](https://img.shields.io/badge/Terraform-Provider-7B42BC?style=for-the-badge&logo=terraform&logoColor=white)
+![FortiCNAPP](https://img.shields.io/badge/FortiCNAPP-Lacework-DA291C?style=for-the-badge&logo=fortinet&logoColor=white)
+![Security](https://img.shields.io/badge/Secrets-Never_in_Git-2EA043?style=for-the-badge&logo=git&logoColor=white)
 
-⸻
+[Overview](#-overview) •
+[.lacework.toml](#1️⃣-laceworktoml) •
+[LW_* Env Vars](#2️⃣-lw_-environment-variables) •
+[Terraform Variables](#3️⃣-terraform-variables) •
+[Security](#-security) •
+[Quick Reference](#-quick-reference)
 
-Authentication Overview
+</div>
 
-Option	Method	Best Use
-1	.lacework.toml	Local development
-2	LW_* environment variables	CI/CD and temporary authentication
-3A	TF_VAR_* environment variables	Terraform automation
-3B	terraform.tfvars	Local Terraform testing
+---
 
-Security: Never commit API keys, API secrets, or other credentials to Git.
+## 📋 Overview
 
-⸻
+The FortiCNAPP Terraform provider (`lacework`) supports several ways to supply credentials. Pick the one that matches where Terraform runs.
 
-1. .lacework.toml
+| # | Method | Credentials Source | Provider Block | Best For |
+|:-:|--------|--------------------|----------------|----------|
+| **1** | `.lacework.toml` | `~/.lacework.toml` | `provider "lacework" {}` | 💻 Local development |
+| **2** | `LW_*` env vars | Shell / CI environment | `provider "lacework" {}` | ⚙️ CI/CD, temporary auth |
+| **3A** | `TF_VAR_*` env vars | Shell / CI environment | `var.lw_*` | 🤖 Terraform automation |
+| **3B** | `terraform.tfvars` | File in project | `var.lw_*` | 🧪 Local Terraform testing |
 
-The Lacework/FortiCNAPP CLI can store your credentials in:
+> [!CAUTION]
+> **Never commit API keys, API secrets, or other credentials to Git.**
 
-~/.lacework.toml
+```mermaid
+flowchart LR
+    subgraph Direct["Read directly by the provider"]
+        A["~/.lacework.toml"]
+        B["LW_ACCOUNT<br/>LW_API_KEY<br/>LW_API_SECRET"]
+    end
+    subgraph TF["Resolved by Terraform first"]
+        C["TF_VAR_lw_*"]
+        D["terraform.tfvars"]
+        V["var.lw_account<br/>var.lw_api_key<br/>var.lw_api_secret"]
+        C --> V
+        D --> V
+    end
+    A --> P(["🛡️ Lacework Provider"])
+    B --> P
+    V --> P
+    P --> F[("FortiCNAPP API")]
 
-Example
+    style P fill:#DA291C,color:#fff,stroke:#DA291C
+    style F fill:#24292f,color:#fff
+```
 
+---
+
+## 1️⃣ `.lacework.toml`
+
+The Lacework / FortiCNAPP CLI stores credentials in your home directory — **outside** the Terraform project.
+
+**`~/.lacework.toml`**
+
+```toml
 [default]
-account = "YOUR_ACCOUNT"
-api_key = "YOUR_API_KEY"
+account    = "YOUR_ACCOUNT"
+api_key    = "YOUR_API_KEY"
 api_secret = "YOUR_API_SECRET"
+```
 
-Terraform Provider
+**Provider**
 
+```hcl
 provider "lacework" {}
+```
 
-Terraform can use the credentials available through the Lacework configuration.
+**Run**
 
-Run Terraform
-
+```bash
 terraform init
 terraform plan
+```
 
-Protect .lacework.toml
+> [!TIP]
+> Working with several tenants? Add more `[profile]` sections to the file and select one with the provider's `profile` argument or the `LW_PROFILE` environment variable.
 
-Do not commit .lacework.toml to Git.
+> [!WARNING]
+> Never copy `.lacework.toml` into a repository. Add it to `.gitignore` as a safety net:
+> ```gitignore
+> .lacework.toml
+> ```
 
-Add it to .gitignore:
+---
 
-.lacework.toml
+## 2️⃣ `LW_*` Environment Variables
 
-⸻
+The provider reads these variables **directly** — nothing goes into Terraform configuration files.
 
-2. Environment Variables
+<table>
+<tr><th>🐧 Linux / 🍎 macOS</th><th>🪟 Windows PowerShell</th></tr>
+<tr>
+<td>
 
-The Lacework/FortiCNAPP provider can authenticate directly using environment variables.
-
-Linux / macOS
-
+```bash
 export LW_ACCOUNT="YOUR_ACCOUNT"
 export LW_API_KEY="YOUR_API_KEY"
 export LW_API_SECRET="YOUR_API_SECRET"
+```
 
-Terraform Provider
+</td>
+<td>
 
-provider "lacework" {}
-
-The provider reads the credentials directly from the environment.
-
-Run Terraform
-
-terraform init
-terraform plan
-
-Windows PowerShell
-
+```powershell
 $env:LW_ACCOUNT="YOUR_ACCOUNT"
 $env:LW_API_KEY="YOUR_API_KEY"
 $env:LW_API_SECRET="YOUR_API_SECRET"
+```
 
-When to Use This Method
+</td>
+</tr>
+</table>
 
-Environment variables are useful for:
+**Provider**
 
-* CI/CD pipelines
-* Automation
-* Temporary authentication
-* Avoiding credentials in Terraform configuration files
+```hcl
+provider "lacework" {}
+```
 
-⸻
+**Run**
 
-3. Terraform Variables
+```bash
+terraform init
+terraform plan
+```
 
-Terraform can also receive the FortiCNAPP credentials through Terraform variables.
+**✅ Use this method for**
 
-There are two approaches:
+- CI/CD pipelines
+- Automation
+- Temporary authentication
+- Keeping credentials out of Terraform configuration files
 
-* 3A — TF_VAR_* environment variables
-* 3B — terraform.tfvars
+---
 
-Both provide values to Terraform variables such as:
+## 3️⃣ Terraform Variables
 
-var.lw_account
-var.lw_api_key
-var.lw_api_secret
+Terraform can also receive credentials as input variables — either from the environment (**3A**) or from a file (**3B**). Both populate the same variables:
 
-⸻
+`var.lw_account` · `var.lw_api_key` · `var.lw_api_secret`
 
-3A. Using TF_VAR_*
+### Shared configuration (3A and 3B)
 
-Terraform automatically maps environment variables beginning with TF_VAR_ to Terraform variables.
+<details open>
+<summary><b>📄 <code>variables.tf</code></b></summary>
 
-Set the Environment Variables
+```hcl
+variable "lw_account" {
+  type      = string
+  sensitive = true
+}
 
+variable "lw_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "lw_api_secret" {
+  type      = string
+  sensitive = true
+}
+```
+
+</details>
+
+<details open>
+<summary><b>📄 <code>provider.tf</code></b></summary>
+
+```hcl
+provider "lacework" {
+  account    = var.lw_account
+  api_key    = var.lw_api_key
+  api_secret = var.lw_api_secret
+}
+```
+
+</details>
+
+### 3A · `TF_VAR_*` Environment Variables
+
+Terraform automatically maps any environment variable prefixed with `TF_VAR_` to the matching input variable.
+
+```bash
 export TF_VAR_lw_account="YOUR_ACCOUNT"
 export TF_VAR_lw_api_key="YOUR_API_KEY"
 export TF_VAR_lw_api_secret="YOUR_API_SECRET"
 
-Define variables.tf
-
-variable "lw_account" {
-  type      = string
-  sensitive = true
-}
-variable "lw_api_key" {
-  type      = string
-  sensitive = true
-}
-variable "lw_api_secret" {
-  type      = string
-  sensitive = true
-}
-
-Configure the Provider
-
-provider "lacework" {
-  account    = var.lw_account
-  api_key    = var.lw_api_key
-  api_secret = var.lw_api_secret
-}
-
-Terraform Mapping
-
-TF_VAR_lw_account
-        |
-        +----> var.lw_account
-TF_VAR_lw_api_key
-        |
-        +----> var.lw_api_key
-TF_VAR_lw_api_secret
-        |
-        +----> var.lw_api_secret
-
-Then run:
-
 terraform init
 terraform plan
+```
 
-⸻
+| Environment Variable | ➜ | Terraform Variable |
+|----------------------|:-:|--------------------|
+| `TF_VAR_lw_account` | ➜ | `var.lw_account` |
+| `TF_VAR_lw_api_key` | ➜ | `var.lw_api_key` |
+| `TF_VAR_lw_api_secret` | ➜ | `var.lw_api_secret` |
 
-3B. Using terraform.tfvars
+### 3B · `terraform.tfvars`
 
-Terraform can also load the credentials from a terraform.tfvars file.
+Terraform loads `terraform.tfvars` automatically on `terraform plan` and `terraform apply`.
 
-Create terraform.tfvars
-
+```hcl
+# terraform.tfvars
 lw_account    = "YOUR_ACCOUNT"
 lw_api_key    = "YOUR_API_KEY"
 lw_api_secret = "YOUR_API_SECRET"
+```
 
-Define variables.tf
+> [!WARNING]
+> If `terraform.tfvars` contains credentials, add it to `.gitignore`.
 
-variable "lw_account" {
-  type      = string
-  sensitive = true
-}
-variable "lw_api_key" {
-  type      = string
-  sensitive = true
-}
-variable "lw_api_secret" {
-  type      = string
-  sensitive = true
-}
+---
 
-Configure the Provider
+## 🔀 Key Difference: `LW_*` vs `TF_VAR_*`
 
-provider "lacework" {
-  account    = var.lw_account
-  api_key    = var.lw_api_key
-  api_secret = var.lw_api_secret
-}
+```mermaid
+flowchart LR
+    L["LW_API_KEY"] -->|read directly| P1(["Lacework Provider"])
 
-Terraform automatically loads:
+    T["TF_VAR_lw_api_key"] -->|mapped by| TF1["Terraform"] --> V1["var.lw_api_key"] --> P2(["Lacework Provider"])
 
-terraform.tfvars
+    F["terraform.tfvars"] -->|loaded by| TF2["Terraform"] --> V2["var.lw_api_key"] --> P3(["Lacework Provider"])
 
-when running:
+    style P1 fill:#DA291C,color:#fff,stroke:#DA291C
+    style P2 fill:#DA291C,color:#fff,stroke:#DA291C
+    style P3 fill:#DA291C,color:#fff,stroke:#DA291C
+```
 
-terraform plan
+| | `LW_*` | `TF_VAR_*` / `terraform.tfvars` |
+|---|---|---|
+| **Who reads it** | The provider | Terraform core |
+| **Provider block** | Empty — `provider "lacework" {}` | Must reference `var.lw_*` |
+| **Needs `variables.tf`** | ❌ No | ✅ Yes |
 
-or:
+---
 
-terraform apply
+## 🛡️ Security
 
-Protect terraform.tfvars
+### ❌ Do not hard-code credentials
 
-If it contains credentials, do not commit it to Git.
-
-Add:
-
-terraform.tfvars
-
-to .gitignore.
-
-⸻
-
-Authentication Flow
-
-The three authentication approaches work differently.
-
-Option 1 — .lacework.toml
-
-~/.lacework.toml
-       |
-       v
-Lacework Provider
-
-Provider configuration:
-
-provider "lacework" {}
-
-⸻
-
-Option 2 — LW_* Environment Variables
-
-LW_ACCOUNT
-LW_API_KEY
-LW_API_SECRET
-       |
-       v
-Lacework Provider
-
-Provider configuration:
-
-provider "lacework" {}
-
-⸻
-
-Option 3A — TF_VAR_*
-
-TF_VAR_lw_account
-TF_VAR_lw_api_key
-TF_VAR_lw_api_secret
-       |
-       v
-Terraform
-       |
-       +----> var.lw_account
-       +----> var.lw_api_key
-       +----> var.lw_api_secret
-                    |
-                    v
-            Lacework Provider
-
-⸻
-
-Option 3B — terraform.tfvars
-
-terraform.tfvars
-       |
-       v
-Terraform
-       |
-       +----> var.lw_account
-       +----> var.lw_api_key
-       +----> var.lw_api_secret
-                    |
-                    v
-            Lacework Provider
-
-⸻
-
-Authentication Methods Summary
-
-Method	Credentials	Provider Configuration
-.lacework.toml	~/.lacework.toml	provider "lacework" {}
-Environment	LW_ACCOUNT, LW_API_KEY, LW_API_SECRET	provider "lacework" {}
-TF_VAR_*	Terraform environment variables	var.lw_*
-terraform.tfvars	lw_* variables	var.lw_*
-
-⸻
-
-Key Difference: LW_* vs TF_VAR_*
-
-This distinction is important.
-
-LW_*
-
-LW_API_KEY
-     |
-     +----> Lacework Provider
-
-The Lacework provider reads the environment variable directly.
-
-TF_VAR_*
-
-TF_VAR_lw_api_key
-     |
-     +----> Terraform
-                |
-                +----> var.lw_api_key
-                            |
-                            +----> Lacework Provider
-
-Terraform reads the TF_VAR_* environment variable and makes it available as a Terraform variable.
-
-terraform.tfvars
-
-terraform.tfvars
-     |
-     +----> Terraform
-                |
-                +----> var.lw_api_key
-                            |
-                            +----> Lacework Provider
-
-⸻
-
-Security
-
-Do Not Hard-Code Credentials
-
-Avoid putting credentials directly into main.tf:
-
+```hcl
+# main.tf — DON'T DO THIS
 provider "lacework" {
   account    = "MY_ACCOUNT"
   api_key    = "MY_API_KEY"
   api_secret = "MY_SECRET"
 }
+```
 
-Credentials should be supplied through one of the supported authentication methods.
+Supply credentials through one of the supported methods above instead.
 
-Recommended .gitignore
+### ✅ Recommended `.gitignore`
 
+```gitignore
 # Lacework credentials
 .lacework.toml
+
 # Terraform variables containing credentials
 terraform.tfvars
+
 # Terraform state
 *.tfstate
 *.tfstate.*
+
 # Terraform working directory
 .terraform/
+```
 
-Important: sensitive = true prevents Terraform from displaying a variable value in normal CLI output, but it does not encrypt the value. Treat terraform.tfvars and Terraform state files as sensitive when they contain credentials.
+> [!IMPORTANT]
+> `sensitive = true` only **hides** a value from normal CLI output — it does **not encrypt** it. Treat `terraform.tfvars` and Terraform state files as sensitive whenever they contain credentials.
 
-⸻
+---
 
-Recommended Usage
+## 🎯 Recommended Usage
 
-Local Development
+| Scenario | Recommended Method | Why |
+|----------|--------------------|-----|
+| 💻 **Local development** | `~/.lacework.toml` | Credentials stay outside the project |
+| ⚙️ **CI/CD & automation** | `LW_*` or `TF_VAR_*` | Injected from the pipeline's secret store; choose based on how your CI system manages Terraform variables |
+| 🧪 **Local Terraform testing** | `terraform.tfvars` | Explicit variable values — keep it out of Git |
 
-Use:
+---
 
-~/.lacework.toml
+## ⚡ Quick Reference
 
-This keeps credentials outside the Terraform project.
+<details>
+<summary><b>Option 1 — <code>.lacework.toml</code></b></summary>
 
-CI/CD and Automation
-
-Use:
-
-LW_ACCOUNT
-LW_API_KEY
-LW_API_SECRET
-
-or:
-
-TF_VAR_lw_account
-TF_VAR_lw_api_key
-TF_VAR_lw_api_secret
-
-depending on how your CI/CD system manages credentials and Terraform variables.
-
-Local Terraform Testing
-
-Use:
-
-terraform.tfvars
-
-when you need to explicitly provide Terraform variables.
-
-Ensure terraform.tfvars is excluded from Git if it contains credentials.
-
-⸻
-
-Quick Reference
-
-Option 1
-
-~/.lacework.toml
+```hcl
+# Credentials in ~/.lacework.toml
 provider "lacework" {}
+```
 
-Option 2
+</details>
 
+<details>
+<summary><b>Option 2 — <code>LW_*</code> environment variables</b></summary>
+
+```bash
 export LW_ACCOUNT="YOUR_ACCOUNT"
 export LW_API_KEY="YOUR_API_KEY"
 export LW_API_SECRET="YOUR_API_SECRET"
+```
+
+```hcl
 provider "lacework" {}
+```
 
-Option 3A
+</details>
 
+<details>
+<summary><b>Option 3A — <code>TF_VAR_*</code> environment variables</b></summary>
+
+```bash
 export TF_VAR_lw_account="YOUR_ACCOUNT"
 export TF_VAR_lw_api_key="YOUR_API_KEY"
 export TF_VAR_lw_api_secret="YOUR_API_SECRET"
+```
+
+```hcl
 provider "lacework" {
   account    = var.lw_account
   api_key    = var.lw_api_key
   api_secret = var.lw_api_secret
 }
+```
 
-Option 3B
+</details>
 
-terraform.tfvars
+<details>
+<summary><b>Option 3B — <code>terraform.tfvars</code></b></summary>
+
+```hcl
+# terraform.tfvars
 lw_account    = "YOUR_ACCOUNT"
 lw_api_key    = "YOUR_API_KEY"
 lw_api_secret = "YOUR_API_SECRET"
+```
+
+```hcl
 provider "lacework" {
   account    = var.lw_account
   api_key    = var.lw_api_key
   api_secret = var.lw_api_secret
 }
+```
+
+</details>
+
+---
+
+<div align="center">
+<sub>🔒 Keep secrets out of source control · Treat state as sensitive · Rotate API keys regularly</sub>
+</div>
