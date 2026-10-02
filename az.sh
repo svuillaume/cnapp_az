@@ -104,10 +104,6 @@ echo "      Azure user   : $AZURE_USER_NAME"
 
 # ============================================================
 # [2] Entra ID User
-#
-# IMPORTANT:
-# Use Microsoft Graph /me.
-# Do NOT use /users/<UPN>.
 # ============================================================
 
 echo
@@ -131,13 +127,6 @@ if [[ $USER_RC -ne 0 ]]; then
     echo
     echo -e "      ${RED}${BOLD}Microsoft Graph /me query failed.${RESET}"
     echo "      Azure identity: $AZURE_USER_NAME"
-    echo
-    echo "      Test manually with:"
-    echo
-    echo "      az rest --method GET \\"
-    echo "        --url 'https://graph.microsoft.com/v1.0/me' \\"
-    echo "        --query '{Name:displayName,UPN:userPrincipalName,ID:id}' \\"
-    echo "        -o table"
 
     missing "Entra ID User → Could not resolve user"
 
@@ -165,6 +154,15 @@ fi
 
 # ============================================================
 # Function: Check Entra role for USER
+#
+# Method 1:
+#   roleManagement/directory/roleAssignments
+#
+# Method 2:
+#   directoryRoles/{role-id}/members
+#
+# Method 3:
+#   roleEligibilitySchedules for PIM
 # ============================================================
 
 check_user_role() {
@@ -184,91 +182,100 @@ check_user_role() {
 
     fi
 
+    ROLE_ID=""
+
     # --------------------------------------------------------
-    # Get role definition ID
+    # Get role definition
     # --------------------------------------------------------
 
     ROLE_RESPONSE=$(az rest \
         --method GET \
         --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'${ROLE_NAME// /%20}'" \
-        2>&1)
+        2>/dev/null)
 
-    if [[ $? -ne 0 ]]; then
-
-        fail "Could not query ${ROLE_NAME} role definition."
-        missing "Entra ID User → ${ROLE_NAME} → Unable to query"
-
-        return
-    fi
-
-    ROLE_ID=$(echo "$ROLE_RESPONSE" | jq -r '.value[0].id // empty')
+    ROLE_ID=$(echo "$ROLE_RESPONSE" | jq -r '.value[0].id // empty' 2>/dev/null)
 
     if [[ -z "$ROLE_ID" ]]; then
 
         fail "Could not find ${ROLE_NAME} role definition."
-        missing "Entra ID User → ${ROLE_NAME}"
+        echo -e "      ${RED}${BOLD}Microsoft Graph role definition could not be resolved.${RESET}"
 
+        missing "Entra ID User → ${ROLE_NAME}"
         return
+
     fi
 
     # --------------------------------------------------------
-    # Check active assignment
+    # Method 1 - Active role assignment
     # --------------------------------------------------------
 
     ASSIGNMENT_RESPONSE=$(az rest \
         --method GET \
         --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$USER_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$ROLE_ID'" \
-        2>&1)
+        2>/dev/null)
 
-    if [[ $? -ne 0 ]]; then
+    ASSIGNMENT_COUNT=$(echo "$ASSIGNMENT_RESPONSE" | jq '.value | length' 2>/dev/null)
 
-        fail "Could not verify ${ROLE_NAME}."
-        echo -e "      ${RED}${BOLD}Microsoft Graph role-assignment query failed.${RESET}"
-        missing "Entra ID User → ${ROLE_NAME} → Unable to query"
-
-        return
-    fi
-
-    COUNT=$(echo "$ASSIGNMENT_RESPONSE" | jq '.value | length')
-
-    if [[ "$COUNT" -gt 0 ]]; then
+    if [[ "$ASSIGNMENT_COUNT" =~ ^[0-9]+$ ]] && [[ "$ASSIGNMENT_COUNT" -gt 0 ]]; then
 
         ok "${ROLE_NAME} assigned"
+        return
+
+    fi
+
+    # --------------------------------------------------------
+    # Method 2 - Activated directory role membership
+    # --------------------------------------------------------
+
+    DIRECTORY_ROLE_RESPONSE=$(az rest \
+        --method GET \
+        --url "https://graph.microsoft.com/v1.0/directoryRoles/${ROLE_ID}/members?\$select=id,displayName,userPrincipalName" \
+        2>/dev/null)
+
+    DIRECTORY_ROLE_COUNT=$(echo "$DIRECTORY_ROLE_RESPONSE" | jq \
+        --arg USER_ID "$USER_OBJECT_ID" \
+        '[.value[]? | select(.id == $USER_ID)] | length' \
+        2>/dev/null)
+
+    if [[ "$DIRECTORY_ROLE_COUNT" =~ ^[0-9]+$ ]] && [[ "$DIRECTORY_ROLE_COUNT" -gt 0 ]]; then
+
+        ok "${ROLE_NAME} assigned"
+        return
+
+    fi
+
+    # --------------------------------------------------------
+    # Method 3 - PIM eligibility
+    # --------------------------------------------------------
+
+    ELIGIBILITY_RESPONSE=$(az rest \
+        --method GET \
+        --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilitySchedules?\$filter=principalId%20eq%20'$USER_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$ROLE_ID'" \
+        2>/dev/null)
+
+    ELIGIBLE_COUNT=$(echo "$ELIGIBILITY_RESPONSE" | jq '.value | length' 2>/dev/null)
+
+    if [[ "$ELIGIBLE_COUNT" =~ ^[0-9]+$ ]] && [[ "$ELIGIBLE_COUNT" -gt 0 ]]; then
+
+        warn "${ROLE_NAME} is PIM eligible but not currently active."
+        echo -e "      ${YELLOW}${BOLD}ACTION REQUIRED:${RESET} Activate this role in PIM."
+
+        missing "Entra ID User → ${ROLE_NAME} → Activate PIM role"
 
     else
 
-        # ----------------------------------------------------
-        # Check PIM eligibility
-        # ----------------------------------------------------
+        fail "${ROLE_NAME} is not assigned."
 
-        ELIGIBILITY_RESPONSE=$(az rest \
-            --method GET \
-            --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilitySchedules?\$filter=principalId%20eq%20'$USER_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$ROLE_ID'" \
-            2>/dev/null)
+        echo -e "      ${RED}${BOLD}REQUIRED / MISSING:${RESET}"
+        echo -e "      ${RED}${BOLD}Entra ID User → ${ROLE_NAME}${RESET}"
 
-        ELIGIBLE_COUNT=$(echo "$ELIGIBILITY_RESPONSE" | jq '.value | length' 2>/dev/null)
+        missing "Entra ID User → ${ROLE_NAME}"
 
-        if [[ "$ELIGIBLE_COUNT" -gt 0 ]]; then
-
-            warn "${ROLE_NAME} is PIM eligible but not currently active."
-            echo -e "      ${YELLOW}${BOLD}ACTION REQUIRED:${RESET} Activate this role in PIM."
-
-            missing "Entra ID User → ${ROLE_NAME} → Activate PIM role"
-
-        else
-
-            fail "${ROLE_NAME} is not assigned."
-            echo -e "      ${RED}${BOLD}REQUIRED / MISSING:${RESET}"
-            echo -e "      ${RED}${BOLD}Entra ID User → ${ROLE_NAME}${RESET}"
-
-            missing "Entra ID User → ${ROLE_NAME}"
-
-        fi
     fi
 }
 
 # ============================================================
-# [3] Application Administrator
+# [3] Entra ID User - Application Administrator
 # ============================================================
 
 check_user_role \
@@ -276,7 +283,7 @@ check_user_role \
     "[3] Entra ID User - Application Administrator"
 
 # ============================================================
-# [4] Privileged Role Administrator
+# [4] Entra ID User - Privileged Role Administrator
 # ============================================================
 
 check_user_role \
@@ -284,11 +291,19 @@ check_user_role \
     "[4] Entra ID User - Privileged Role Administrator"
 
 # ============================================================
-# [5] Entra ID User - Azure Owner
+# [5] Entra ID User - Global Administrator
+# ============================================================
+
+check_user_role \
+    "Global Administrator" \
+    "[5] Entra ID User - Global Administrator"
+
+# ============================================================
+# [6] Entra ID User - Azure Owner
 # ============================================================
 
 echo
-echo "[5] Entra ID User - Azure Owner"
+echo "[6] Entra ID User - Azure Owner"
 echo "------------------------------------------------------------"
 
 USER_OWNER="false"
@@ -323,94 +338,120 @@ else
 fi
 
 # ============================================================
-# [6] FortiCNAPP App Registration
+# [7] FortiCNAPP App Registration
 #
-# Use Microsoft Graph instead of az ad app show.
+# Microsoft Graph first.
+# Azure CLI fallback.
 # ============================================================
 
 echo
-echo "[6] FortiCNAPP App Registration"
+echo "[7] FortiCNAPP App Registration"
 echo "------------------------------------------------------------"
+
+APP_OBJECT_ID=""
+APP_DISPLAY_NAME=""
 
 APP_RESPONSE=$(az rest \
     --method GET \
     --url "https://graph.microsoft.com/v1.0/applications?\$filter=appId%20eq%20'$APP_ID'" \
-    2>&1)
+    2>/dev/null)
 
-if [[ $? -ne 0 ]]; then
+APP_OBJECT_ID=$(echo "$APP_RESPONSE" | jq -r '.value[0].id // empty' 2>/dev/null)
+APP_DISPLAY_NAME=$(echo "$APP_RESPONSE" | jq -r '.value[0].displayName // empty' 2>/dev/null)
 
-    fail "Could not query App Registration."
-    echo -e "      ${RED}${BOLD}Microsoft Graph application query failed.${RESET}"
-    missing "FortiCNAPP App Registration → $APP_ID"
+# ------------------------------------------------------------
+# Fallback: Azure CLI
+# ------------------------------------------------------------
+
+if [[ -z "$APP_OBJECT_ID" ]]; then
+
+    APP_CLI_RESPONSE=$(az ad app show \
+        --id "$APP_ID" \
+        -o json \
+        2>/dev/null)
+
+    APP_OBJECT_ID=$(echo "$APP_CLI_RESPONSE" | jq -r '.id // empty' 2>/dev/null)
+    APP_DISPLAY_NAME=$(echo "$APP_CLI_RESPONSE" | jq -r '.displayName // empty' 2>/dev/null)
+
+fi
+
+if [[ -n "$APP_OBJECT_ID" ]]; then
+
+    ok "FortiCNAPP App Registration exists"
+
+    echo "      Display Name : $APP_DISPLAY_NAME"
+    echo "      Client ID    : $APP_ID"
+    echo "      Object ID    : $APP_OBJECT_ID"
 
 else
 
-    APP_OBJECT_ID=$(echo "$APP_RESPONSE" | jq -r '.value[0].id // empty')
-    APP_DISPLAY_NAME=$(echo "$APP_RESPONSE" | jq -r '.value[0].displayName // empty')
+    fail "FortiCNAPP App Registration not found."
+    echo -e "      ${RED}${BOLD}APP-ID checked:${RESET} $APP_ID"
 
-    if [[ -n "$APP_OBJECT_ID" ]]; then
+    missing "FortiCNAPP App Registration → $APP_ID"
 
-        ok "FortiCNAPP App Registration exists"
-
-        echo "      Display Name : $APP_DISPLAY_NAME"
-        echo "      Client ID    : $APP_ID"
-        echo "      Object ID    : $APP_OBJECT_ID"
-
-    else
-
-        fail "FortiCNAPP App Registration not found."
-        missing "FortiCNAPP App Registration → $APP_ID"
-
-    fi
 fi
 
 # ============================================================
-# [7] FortiCNAPP Service Principal
+# [8] FortiCNAPP Service Principal
+#
+# Microsoft Graph first.
+# Azure CLI fallback.
 # ============================================================
 
 echo
-echo "[7] FortiCNAPP Service Principal"
+echo "[8] FortiCNAPP Service Principal"
 echo "------------------------------------------------------------"
-
-SP_RESPONSE=$(az rest \
-    --method GET \
-    --url "https://graph.microsoft.com/v1.0/servicePrincipals?\$filter=appId%20eq%20'$APP_ID'" \
-    2>&1)
 
 SP_OBJECT_ID=""
 SP_DISPLAY_NAME=""
 
-if [[ $? -ne 0 ]]; then
+SP_RESPONSE=$(az rest \
+    --method GET \
+    --url "https://graph.microsoft.com/v1.0/servicePrincipals?\$filter=appId%20eq%20'$APP_ID'" \
+    2>/dev/null)
 
-    fail "Could not query Service Principal."
-    missing "FortiCNAPP Service Principal → $APP_ID"
+SP_OBJECT_ID=$(echo "$SP_RESPONSE" | jq -r '.value[0].id // empty' 2>/dev/null)
+SP_DISPLAY_NAME=$(echo "$SP_RESPONSE" | jq -r '.value[0].displayName // empty' 2>/dev/null)
+
+# ------------------------------------------------------------
+# Fallback: Azure CLI
+# ------------------------------------------------------------
+
+if [[ -z "$SP_OBJECT_ID" ]]; then
+
+    SP_CLI_RESPONSE=$(az ad sp show \
+        --id "$APP_ID" \
+        -o json \
+        2>/dev/null)
+
+    SP_OBJECT_ID=$(echo "$SP_CLI_RESPONSE" | jq -r '.id // empty' 2>/dev/null)
+    SP_DISPLAY_NAME=$(echo "$SP_CLI_RESPONSE" | jq -r '.displayName // empty' 2>/dev/null)
+
+fi
+
+if [[ -n "$SP_OBJECT_ID" ]]; then
+
+    ok "FortiCNAPP Service Principal exists"
+
+    echo "      Display Name : $SP_DISPLAY_NAME"
+    echo "      Object ID    : $SP_OBJECT_ID"
 
 else
 
-    SP_OBJECT_ID=$(echo "$SP_RESPONSE" | jq -r '.value[0].id // empty')
-    SP_DISPLAY_NAME=$(echo "$SP_RESPONSE" | jq -r '.value[0].displayName // empty')
+    fail "FortiCNAPP Service Principal not found."
+    echo -e "      ${RED}${BOLD}APP-ID checked:${RESET} $APP_ID"
 
-    if [[ -n "$SP_OBJECT_ID" ]]; then
+    missing "FortiCNAPP Service Principal → $APP_ID"
 
-        ok "FortiCNAPP Service Principal exists"
-
-        echo "      Display Name : $SP_DISPLAY_NAME"
-        echo "      Object ID    : $SP_OBJECT_ID"
-
-    else
-
-        fail "FortiCNAPP Service Principal not found."
-        missing "FortiCNAPP Service Principal → $APP_ID"
-
-    fi
 fi
 
 # ============================================================
-# [8] Service Principal - Azure Owner
+# [9] FortiCNAPP Service Principal - Azure Owner
 # ============================================================
 
 echo
-echo "[8] FortiCNAPP Service Principal - Azure Owner"
+echo "[9] FortiCNAPP Service Principal - Azure Owner"
 echo "------------------------------------------------------------"
 
 SP_OWNER="false"
@@ -472,17 +513,9 @@ check_sp_role() {
     ROLE_RESPONSE=$(az rest \
         --method GET \
         --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'${ROLE_NAME// /%20}'" \
-        2>&1)
+        2>/dev/null)
 
-    if [[ $? -ne 0 ]]; then
-
-        fail "Could not query ${ROLE_NAME} role definition."
-        missing "FortiCNAPP Service Principal → ${ROLE_NAME} → Unable to query"
-
-        return
-    fi
-
-    ROLE_ID=$(echo "$ROLE_RESPONSE" | jq -r '.value[0].id // empty')
+    ROLE_ID=$(echo "$ROLE_RESPONSE" | jq -r '.value[0].id // empty' 2>/dev/null)
 
     if [[ -z "$ROLE_ID" ]]; then
 
@@ -490,31 +523,24 @@ check_sp_role() {
         missing "FortiCNAPP Service Principal → ${ROLE_NAME}"
 
         return
+
     fi
 
     ASSIGNMENT_RESPONSE=$(az rest \
         --method GET \
         --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$SP_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$ROLE_ID'" \
-        2>&1)
+        2>/dev/null)
 
-    if [[ $? -ne 0 ]]; then
+    COUNT=$(echo "$ASSIGNMENT_RESPONSE" | jq '.value | length' 2>/dev/null)
 
-        fail "Could not verify ${ROLE_NAME}."
-        echo -e "      ${RED}${BOLD}Microsoft Graph role-assignment query failed.${RESET}"
-        missing "FortiCNAPP Service Principal → ${ROLE_NAME} → Unable to query"
-
-        return
-    fi
-
-    COUNT=$(echo "$ASSIGNMENT_RESPONSE" | jq '.value | length')
-
-    if [[ "$COUNT" -gt 0 ]]; then
+    if [[ "$COUNT" =~ ^[0-9]+$ ]] && [[ "$COUNT" -gt 0 ]]; then
 
         ok "${ROLE_NAME} assigned to Service Principal"
 
     else
 
         fail "${ROLE_NAME} is not assigned to Service Principal."
+
         echo -e "      ${RED}${BOLD}REQUIRED / MISSING:${RESET}"
         echo -e "      ${RED}${BOLD}FortiCNAPP Service Principal → ${ROLE_NAME}${RESET}"
 
@@ -524,27 +550,27 @@ check_sp_role() {
 }
 
 # ============================================================
-# [9] Service Principal - Application Administrator
+# [10] Service Principal - Application Administrator
 # ============================================================
 
 check_sp_role \
     "Application Administrator" \
-    "[9] FortiCNAPP Service Principal - Application Administrator"
+    "[10] FortiCNAPP Service Principal - Application Administrator"
 
 # ============================================================
-# [10] Service Principal - Privileged Role Administrator
+# [11] Service Principal - Privileged Role Administrator
 # ============================================================
 
 check_sp_role \
     "Privileged Role Administrator" \
-    "[10] FortiCNAPP Service Principal - Privileged Role Administrator"
+    "[11] FortiCNAPP Service Principal - Privileged Role Administrator"
 
 # ============================================================
-# [11] Optional Directory Readers
+# [12] Optional - Directory Readers
 # ============================================================
 
 echo
-echo "[11] Optional - Directory Readers"
+echo "[12] Optional - Directory Readers"
 echo "------------------------------------------------------------"
 
 DIRECTORY_READER="false"
@@ -556,7 +582,7 @@ if [[ -n "$SP_OBJECT_ID" ]]; then
         --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'Directory%20Readers'" \
         2>/dev/null)
 
-    DR_ROLE_ID=$(echo "$DR_ROLE_RESPONSE" | jq -r '.value[0].id // empty')
+    DR_ROLE_ID=$(echo "$DR_ROLE_RESPONSE" | jq -r '.value[0].id // empty' 2>/dev/null)
 
     if [[ -n "$DR_ROLE_ID" ]]; then
 
@@ -567,7 +593,7 @@ if [[ -n "$SP_OBJECT_ID" ]]; then
 
         DR_COUNT=$(echo "$DR_ASSIGNMENT" | jq '.value | length' 2>/dev/null)
 
-        if [[ "$DR_COUNT" -gt 0 ]]; then
+        if [[ "$DR_COUNT" =~ ^[0-9]+$ ]] && [[ "$DR_COUNT" -gt 0 ]]; then
 
             DIRECTORY_READER="true"
             ok "Directory Readers assigned"
@@ -592,11 +618,11 @@ else
 fi
 
 # ============================================================
-# [12] REQUIRED / MISSING
+# [13] REQUIRED / MISSING
 # ============================================================
 
 echo
-echo "[12] REQUIRED / MISSING"
+echo "[13] REQUIRED / MISSING"
 echo "------------------------------------------------------------"
 
 if [[ ${#REQUIRED_MISSING[@]} -eq 0 ]]; then
@@ -612,11 +638,11 @@ else
 fi
 
 # ============================================================
-# [13] Generate JSON
+# [14] Generate JSON
 # ============================================================
 
 echo
-echo "[13] Generate JSON Report"
+echo "[14] Generate JSON Report"
 echo "------------------------------------------------------------"
 
 if [[ "$FAIL_COUNT" -gt 0 ]]; then
@@ -671,6 +697,7 @@ jq -n \
     object_id: $user_object_id,
 
     required_roles: {
+      global_administrator: "checked",
       application_administrator: "checked",
       privileged_role_administrator: "checked",
       azure_owner: $user_owner
@@ -715,7 +742,7 @@ else
 fi
 
 # ============================================================
-# [14] Final Summary
+# [15] Final Summary
 # ============================================================
 
 echo
