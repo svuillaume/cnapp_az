@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# FortiCNAPP Azure Agentless Scanning - interactive Terraform setup
+# Run in Azure Cloud Shell (Bash):  bash forticnapp_agentless_setup.sh
+set -euo pipefail
+
+GUID='^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
+
+ask() { # ask VAR "Prompt" "default"
+  local __var=$1 __prompt=$2 __def=${3:-} __in
+  if [[ -n $__def ]]; then read -r -p "$__prompt [$__def]: " __in; __in=${__in:-$__def}
+  else read -r -p "$__prompt: " __in; fi
+  printf -v "$__var" '%s' "$__in"
+}
+ask_guid() { # ask_guid VAR "Prompt" "default"
+  local v
+  while true; do
+    ask v "$2" "${3:-}"
+    [[ $v =~ $GUID ]] && break
+    echo "  Not a valid GUID, try again."
+  done
+  printf -v "$1" '%s' "$v"
+}
+
+echo "== FortiCNAPP Azure Agentless Scanning setup =="
+
+# Defaults pulled from the current az login when available
+DEF_TENANT=$(az account show --query tenantId -o tsv 2>/dev/null || true)
+DEF_SUB=$(az account show --query id -o tsv 2>/dev/null || true)
+
+ask_guid TENANT_ID "Tenant ID" "$DEF_TENANT"
+
+SUBS=()
+ask_guid SUB "Subscription ID to scan" "$DEF_SUB"
+SUBS+=("$SUB")
+while true; do
+  read -r -p "Add another subscription ID? (leave empty to continue): " MORE
+  [[ -z $MORE ]] && break
+  if [[ $MORE =~ $GUID ]]; then SUBS+=("$MORE"); else echo "  Not a valid GUID."; fi
+done
+
+ask REGION "Azure region" "canadacentral"
+ask RG "Scanning resource group name" "rg-forticnapp-agentless"
+ask INT_NAME "Integration name" "agentless-azure-sub"
+ask LAW "Create Log Analytics workspace? (true/false)" "true"
+ask GLOBAL "Global resources in this region? (true for the first region)" "true"
+ask ACCOUNT "FortiCNAPP account (subdomain of <account>.lacework.net)" ""
+ACCOUNT=${ACCOUNT#https://}; ACCOUNT=${ACCOUNT%%.lacework.net*}
+ask PROFILE "CLI profile name" "forticnapp"
+ask DIR "Working directory" "tf_forticnapp_agentless"
+ask API_KEY "FortiCNAPP API key (empty = placeholder)" "XXXXXXX"
+read -r -s -p "FortiCNAPP API secret (hidden, empty = placeholder): " API_SECRET; echo
+API_SECRET=${API_SECRET:-xxxxxxxx}
+
+SUB_LINES=""
+for s in "${SUBS[@]}"; do SUB_LINES+="    \"/subscriptions/${s}\","$'\n'; done
+SUB_LINES=${SUB_LINES%,$'\n'}
+
+mkdir -p "$DIR" && cd "$DIR"
+
+cat > version.tf <<'EOF'
+terraform {
+  required_version = ">= 0.13"
+
+  required_providers {
+    lacework = {
+      source  = "lacework/lacework"
+      version = "~> 2.6"
+    }
+  }
+}
+EOF
+
+cat > az_agentless.tf <<EOF
+provider "lacework" {
+  profile = "${PROFILE}"
+}
+
+module "lacework_azure_agentless_scanning_subscription_${REGION}" {
+  source = "lacework/agentless-scanning/azure"
+
+  integration_level              = "SUBSCRIPTION"
+  lacework_integration_name      = "${INT_NAME}"
+  global                         = ${GLOBAL}
+  create_log_analytics_workspace = ${LAW}
+  region                         = "${REGION}"
+
+  scanning_resource_group_name   = "${RG}"
+  tenant_id                      = "${TENANT_ID}"
+
+  included_subscriptions = [
+${SUB_LINES}
+  ]
+}
+EOF
+
+umask 077
+cat > .lacework.toml <<EOF
+[${PROFILE}]
+  account = "${ACCOUNT}"
+  api_key = "${API_KEY}"
+  api_secret = "${API_SECRET}"
+  version = 2
+EOF
+chmod 600 .lacework.toml
+
+echo
+echo "Files written to $(pwd):"; ls -la version.tf az_agentless.tf .lacework.toml
+[[ $API_KEY == XXXXXXX ]] && echo "Edit .lacework.toml and set api_key / api_secret before deploying."
+
+read -r -p "Run terraform init and plan now? (y/N): " GO
+if [[ ${GO,,} == y ]]; then
+  terraform init && terraform plan
+  echo "Review the plan, then run: terraform apply"
+fi
