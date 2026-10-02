@@ -1,42 +1,38 @@
 #!/usr/bin/env bash
 
 # ============================================================
-# FortiCNAPP Azure Automated Configuration
-# Entra ID User & App Registration Preflight Check
+# FortiCNAPP Azure Integration Preflight
 #
 # Usage:
 #   ./forticnapp-preflight.sh <APP-ID> [SUBSCRIPTION-ID]
 #
-# Output:
-#   Console preflight results
-#   ./preflight.json
+# Example:
+#   ./forticnapp-preflight.sh 12345678-aaaa-bbbb-cccc-123456789abc
 #
-# READ-ONLY:
-#   This script does NOT modify Azure or Entra ID.
+# Read-only:
+#   This script does NOT create, modify, assign, or delete
+#   Azure / Entra resources or permissions.
+#
+# Output:
+#   preflight.json
 # ============================================================
 
-set -u
-
-APP_ID="${1:-}"
-SUB_ID="${2:-}"
-
-REPORT_FILE="preflight.json"
+set -o pipefail
 
 # ============================================================
-# COLORS / STATUS
+# Colours
 # ============================================================
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
-YELLOW='\033[0;33m'
+YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-OK="${GREEN}✔ OK${RESET}"
-FAIL="${RED}✘ FAIL${RESET}"
-WARN="${YELLOW}⚠ WARN${RESET}"
-INFO="${CYAN}ℹ INFO${RESET}"
+# ============================================================
+# Counters / arrays
+# ============================================================
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -44,54 +40,40 @@ WARN_COUNT=0
 
 REQUIRED_MISSING=()
 
-# JSON values
-USER_APP_ADMIN=false
-USER_PRA=false
-APP_OWNER=false
-APP_APP_ADMIN=false
-APP_PRA=false
-APP_DIRECTORY_READER=false
+REPORT_FILE="preflight.json"
 
 # ============================================================
-# FUNCTIONS
+# Helper functions
 # ============================================================
 
-pass() {
-    echo -e "  ${OK} $1"
+ok() {
+    echo -e "  ${GREEN}✔ OK${RESET} $1"
     ((PASS_COUNT++))
 }
 
 fail() {
-    echo -e "  ${FAIL} $1"
+    echo -e "  ${RED}✘ FAIL${RESET} $1"
     ((FAIL_COUNT++))
 }
 
 warn() {
-    echo -e "  ${WARN} $1"
+    echo -e "  ${YELLOW}⚠ WARN${RESET} $1"
     ((WARN_COUNT++))
 }
 
 info() {
-    echo -e "  ${INFO} $1"
+    echo -e "  ${CYAN}ℹ INFO${RESET} $1"
 }
 
-add_missing() {
+missing() {
     REQUIRED_MISSING+=("$1")
 }
 
-section() {
-    echo
-    echo -e "${BOLD}[$1] $2${RESET}"
-    echo "------------------------------------------------------------"
-}
-
 # ============================================================
-# ARGUMENT CHECK
+# Arguments
 # ============================================================
 
-if [[ -z "$APP_ID" ]]; then
-    echo
-    echo -e "${RED}${BOLD}ERROR: FortiCNAPP App Client ID is required.${RESET}"
+if [[ -z "$1" ]]; then
     echo
     echo "Usage:"
     echo "  $0 <APP-ID> [SUBSCRIPTION-ID]"
@@ -99,393 +81,635 @@ if [[ -z "$APP_ID" ]]; then
     exit 1
 fi
 
+APP_ID="$1"
+
+# ============================================================
+# [1] Azure CLI / jq / authentication
+# ============================================================
+
 echo
-echo "============================================================"
-echo " FortiCNAPP Azure Automated Configuration"
-echo " Entra ID User & App Registration Preflight"
-echo "============================================================"
-
-# ============================================================
-# 1. AZURE CLI / LOGIN
-# ============================================================
-
-section "1" "Azure CLI / Login"
+echo "[1] Azure CLI / Authentication"
+echo "------------------------------------------------------------"
 
 if ! command -v az >/dev/null 2>&1; then
     fail "Azure CLI is not installed."
     exit 1
 else
-    pass "Azure CLI is installed."
+    ok "Azure CLI installed"
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
     fail "jq is not installed."
-    echo
-    echo "Install jq or use Azure Cloud Shell."
     exit 1
 else
-    pass "jq is installed."
+    ok "jq installed"
 fi
 
 ACCOUNT_JSON=$(az account show -o json 2>/dev/null)
 
 if [[ -z "$ACCOUNT_JSON" ]]; then
-    fail "No active Azure login."
+    fail "Not authenticated to Azure CLI."
     echo
     echo "Run:"
     echo "  az login"
     exit 1
 else
-    pass "Azure CLI is authenticated."
+    ok "Azure CLI authenticated"
 fi
 
-TENANT_ID=$(echo "$ACCOUNT_JSON" | jq -r '.tenantId')
-CURRENT_SUB_ID=$(echo "$ACCOUNT_JSON" | jq -r '.id')
-SUB_NAME=$(echo "$ACCOUNT_JSON" | jq -r '.name')
-USER_NAME=$(echo "$ACCOUNT_JSON" | jq -r '.user.name')
+TENANT_ID=$(echo "$ACCOUNT_JSON" | jq -r '.tenantId // empty')
+CURRENT_SUBSCRIPTION_ID=$(echo "$ACCOUNT_JSON" | jq -r '.id // empty')
+CURRENT_SUBSCRIPTION_NAME=$(echo "$ACCOUNT_JSON" | jq -r '.name // empty')
+AZURE_USER_NAME=$(echo "$ACCOUNT_JSON" | jq -r '.user.name // empty')
 
-if [[ -z "$SUB_ID" ]]; then
-    SUB_ID="$CURRENT_SUB_ID"
-fi
+SUBSCRIPTION_ID="${2:-$CURRENT_SUBSCRIPTION_ID}"
 
-echo
-echo "  Entra Tenant      : $TENANT_ID"
-echo "  Subscription ID   : $SUB_ID"
-echo "  Subscription Name : $SUB_NAME"
-echo "  Entra ID User     : $USER_NAME"
+echo "      Tenant       : $TENANT_ID"
+echo "      Subscription : $SUBSCRIPTION_ID"
 
-# ============================================================
-# 2. ENTRA ID USER
-# ============================================================
-
-section "2" "Entra ID User"
-
-USER_ID=$(az ad user show \
-    --id "$USER_NAME" \
-    --query id \
-    -o tsv 2>/dev/null || true)
-
-if [[ -z "$USER_ID" ]]; then
-    fail "Could not resolve the signed-in Entra ID User."
-    add_missing "Entra ID User could not be resolved"
-else
-    pass "Entra ID User found."
-    echo "  User Object ID : $USER_ID"
+if [[ -n "$CURRENT_SUBSCRIPTION_NAME" ]]; then
+    echo "      Name         : $CURRENT_SUBSCRIPTION_NAME"
 fi
 
 # ============================================================
-# 3. ENTRA ID USER - APPLICATION ADMINISTRATOR
-# ============================================================
-
-section "3" "Entra ID User - Application Administrator"
-
-APP_ADMIN_ROLE_ID=$(az rest \
-    --method GET \
-    --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'Application%20Administrator'" \
-    --query "value[0].id" \
-    -o tsv 2>/dev/null || true)
-
-if [[ -n "$USER_ID" && -n "$APP_ADMIN_ROLE_ID" ]]; then
-
-    USER_APP_ADMIN=$(az rest \
-        --method GET \
-        --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$USER_ID'%20and%20roleDefinitionId%20eq%20'$APP_ADMIN_ROLE_ID'" \
-        --query "length(value)" \
-        -o tsv 2>/dev/null || echo "0")
-
-    if [[ "$USER_APP_ADMIN" -gt 0 ]]; then
-        USER_APP_ADMIN=true
-        pass "Application Administrator"
-    else
-        fail "Application Administrator"
-        add_missing "Entra ID User → Application Administrator"
-    fi
-
-else
-    fail "Could not verify Application Administrator"
-    add_missing "Entra ID User → Application Administrator"
-fi
-
-# ============================================================
-# 4. ENTRA ID USER - PRIVILEGED ROLE ADMINISTRATOR
-# ============================================================
-
-section "4" "Entra ID User - Privileged Role Administrator"
-
-PRA_ROLE_ID=$(az rest \
-    --method GET \
-    --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'Privileged%20Role%20Administrator'" \
-    --query "value[0].id" \
-    -o tsv 2>/dev/null || true)
-
-if [[ -n "$USER_ID" && -n "$PRA_ROLE_ID" ]]; then
-
-    USER_PRA=$(az rest \
-        --method GET \
-        --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$USER_ID'%20and%20roleDefinitionId%20eq%20'$PRA_ROLE_ID'" \
-        --query "length(value)" \
-        -o tsv 2>/dev/null || echo "0")
-
-    if [[ "$USER_PRA" -gt 0 ]]; then
-        USER_PRA=true
-        pass "Privileged Role Administrator"
-    else
-        fail "Privileged Role Administrator"
-        add_missing "Entra ID User → Privileged Role Administrator"
-    fi
-
-else
-    fail "Could not verify Privileged Role Administrator"
-    add_missing "Entra ID User → Privileged Role Administrator"
-fi
-
-# ============================================================
-# 5. ENTRA ID USER - AZURE OWNER
-# ============================================================
-
-section "5" "Entra ID User - Azure Subscription Permissions"
-
-USER_OWNER_COUNT=$(az role assignment list \
-    --assignee "$USER_NAME" \
-    --scope "/subscriptions/$SUB_ID" \
-    --include-inherited \
-    --query "[?roleDefinitionName=='Owner'] | length(@)" \
-    -o tsv 2>/dev/null || echo "0")
-
-if [[ "$USER_OWNER_COUNT" -gt 0 ]]; then
-    pass "Owner on target subscription"
-else
-    warn "Owner is not directly/inherited on the Entra ID User."
-    info "Verify that the user can assign Azure RBAC roles."
-fi
-
-# ============================================================
-# 6. FORTICNAPP APP REGISTRATION
-# ============================================================
-
-section "6" "FortiCNAPP App Registration"
-
-APP_JSON=$(az ad app show \
-    --id "$APP_ID" \
-    -o json 2>/dev/null || true)
-
-if [[ -z "$APP_JSON" ]]; then
-    fail "App Registration NOT found."
-    add_missing "FortiCNAPP App Registration"
-    exit 1
-fi
-
-APP_OBJECT_ID=$(echo "$APP_JSON" | jq -r '.id')
-APP_DISPLAY_NAME=$(echo "$APP_JSON" | jq -r '.displayName')
-
-pass "App Registration found."
-
-echo
-echo "  Display Name : $APP_DISPLAY_NAME"
-echo "  Client ID    : $APP_ID"
-echo "  Object ID    : $APP_OBJECT_ID"
-
-# ============================================================
-# 7. SERVICE PRINCIPAL
-# ============================================================
-
-section "7" "FortiCNAPP Service Principal"
-
-SP_JSON=$(az ad sp show \
-    --id "$APP_ID" \
-    -o json 2>/dev/null || true)
-
-if [[ -z "$SP_JSON" ]]; then
-    fail "Service Principal NOT found."
-    add_missing "FortiCNAPP Service Principal"
-    exit 1
-fi
-
-SP_OBJECT_ID=$(echo "$SP_JSON" | jq -r '.id')
-SP_NAME=$(echo "$SP_JSON" | jq -r '.displayName')
-
-pass "Service Principal found."
-
-echo
-echo "  Display Name : $SP_NAME"
-echo "  Object ID    : $SP_OBJECT_ID"
-
-# ============================================================
-# 8. APP - AZURE OWNER
-# ============================================================
-
-section "8" "FortiCNAPP App - Azure Owner"
-
-OWNER_COUNT=$(az role assignment list \
-    --assignee-object-id "$SP_OBJECT_ID" \
-    --scope "/subscriptions/$SUB_ID" \
-    --include-inherited \
-    --query "[?roleDefinitionName=='Owner'] | length(@)" \
-    -o tsv 2>/dev/null || echo "0")
-
-if [[ "$OWNER_COUNT" -gt 0 ]]; then
-    APP_OWNER=true
-    pass "Owner on target subscription"
-else
-    fail "Owner on target subscription"
-    add_missing "FortiCNAPP App → Azure Owner on subscription"
-fi
-
-# ============================================================
-# 9. APP - APPLICATION ADMINISTRATOR
-# ============================================================
-
-section "9" "FortiCNAPP App - Application Administrator"
-
-if [[ -n "$APP_ADMIN_ROLE_ID" ]]; then
-
-    APP_ADMIN_COUNT=$(az rest \
-        --method GET \
-        --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$SP_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$APP_ADMIN_ROLE_ID'" \
-        --query "length(value)" \
-        -o tsv 2>/dev/null || echo "0")
-
-    if [[ "$APP_ADMIN_COUNT" -gt 0 ]]; then
-        APP_APP_ADMIN=true
-        pass "Application Administrator"
-    else
-        fail "Application Administrator"
-        add_missing "FortiCNAPP App → Application Administrator"
-    fi
-
-else
-    fail "Could not resolve Application Administrator role."
-    add_missing "FortiCNAPP App → Application Administrator"
-fi
-
-# ============================================================
-# 10. APP - PRIVILEGED ROLE ADMINISTRATOR
-# ============================================================
-
-section "10" "FortiCNAPP App - Privileged Role Administrator"
-
-if [[ -n "$PRA_ROLE_ID" ]]; then
-
-    PRA_COUNT=$(az rest \
-        --method GET \
-        --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$SP_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$PRA_ROLE_ID'" \
-        --query "length(value)" \
-        -o tsv 2>/dev/null || echo "0")
-
-    if [[ "$PRA_COUNT" -gt 0 ]]; then
-        APP_PRA=true
-        pass "Privileged Role Administrator"
-    else
-        fail "Privileged Role Administrator"
-        add_missing "FortiCNAPP App → Privileged Role Administrator"
-    fi
-
-else
-    fail "Could not resolve Privileged Role Administrator role."
-    add_missing "FortiCNAPP App → Privileged Role Administrator"
-fi
-
-# ============================================================
-# 11. DIRECTORY READER - OPTIONAL
-# ============================================================
-
-section "11" "FortiCNAPP App - Directory Reader (Optional)"
-
-DR_ROLE_ID=$(az rest \
-    --method GET \
-    --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'Directory%20Readers'" \
-    --query "value[0].id" \
-    -o tsv 2>/dev/null || true)
-
-if [[ -n "$DR_ROLE_ID" ]]; then
-
-    DR_COUNT=$(az rest \
-        --method GET \
-        --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$SP_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$DR_ROLE_ID'" \
-        --query "length(value)" \
-        -o tsv 2>/dev/null || echo "0")
-
-    if [[ "$DR_COUNT" -gt 0 ]]; then
-        APP_DIRECTORY_READER=true
-        pass "Directory Reader"
-        info "Entra user/group/app discovery is enabled."
-    else
-        info "Directory Reader not assigned."
-        info "Optional - required only for Entra directory data collection."
-    fi
-
-else
-    warn "Could not resolve Directory Reader role."
-fi
-
-# ============================================================
-# 12. REQUIRED / MISSING
+# [2] Resolve signed-in Entra ID User
 # ============================================================
 
 echo
-echo "============================================================"
-echo -e "${RED}${BOLD} REQUIRED / MISSING${RESET}"
-echo "============================================================"
+echo "[2] Entra ID User"
+echo "------------------------------------------------------------"
+
+USER_OBJECT_ID=""
+USER_DISPLAY_NAME=""
+USER_UPN=""
+
+if [[ -z "$AZURE_USER_NAME" ]]; then
+
+    fail "Could not determine the signed-in Azure account."
+    missing "Entra ID User → Signed-in Azure account"
+
+else
+
+    echo "      Azure identity : $AZURE_USER_NAME"
+
+    # --------------------------------------------------------
+    # Resolve user through Microsoft Graph
+    # --------------------------------------------------------
+
+    USER_URL="https://graph.microsoft.com/v1.0/users/$(printf '%s' "$AZURE_USER_NAME" | jq -sRr @uri)"
+
+    USER_RESPONSE=$(az rest \
+        --method GET \
+        --url "$USER_URL" \
+        2>&1)
+
+    USER_RC=$?
+
+    if [[ $USER_RC -ne 0 ]]; then
+
+        fail "Could not resolve the signed-in Entra ID User."
+
+        echo
+        echo -e "      ${RED}${BOLD}Microsoft Graph query failed.${RESET}"
+        echo "      Identity: $AZURE_USER_NAME"
+        echo
+        echo "      This can indicate that the signed-in identity"
+        echo "      cannot query Microsoft Graph users."
+
+        missing "Entra ID User → Could not resolve user"
+
+    else
+
+        USER_OBJECT_ID=$(echo "$USER_RESPONSE" | jq -r '.id // empty')
+        USER_DISPLAY_NAME=$(echo "$USER_RESPONSE" | jq -r '.displayName // empty')
+        USER_UPN=$(echo "$USER_RESPONSE" | jq -r '.userPrincipalName // empty')
+
+        if [[ -n "$USER_OBJECT_ID" ]]; then
+
+            ok "Entra ID User resolved"
+
+            echo "      Display Name : $USER_DISPLAY_NAME"
+            echo "      UPN          : $USER_UPN"
+            echo "      Object ID    : $USER_OBJECT_ID"
+
+        else
+
+            fail "Microsoft Graph returned no Entra user object."
+            missing "Entra ID User → Could not resolve user"
+
+        fi
+    fi
+fi
+
+# ============================================================
+# Function: check Entra role
+# ============================================================
+
+check_entra_role() {
+
+    local ROLE_NAME="$1"
+    local LABEL="$2"
+
+    echo
+    echo "$LABEL"
+    echo "------------------------------------------------------------"
+
+    if [[ -z "$USER_OBJECT_ID" ]]; then
+
+        fail "Cannot verify ${ROLE_NAME}; Entra ID User was not resolved."
+        missing "Entra ID User → ${ROLE_NAME}"
+        return
+
+    fi
+
+    # --------------------------------------------------------
+    # Get role definition
+    # --------------------------------------------------------
+
+    ROLE_DEFINITION_URL="https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'$(printf '%s' "$ROLE_NAME" | sed 's/ /%20/g')'"
+
+    ROLE_RESPONSE=$(az rest \
+        --method GET \
+        --url "$ROLE_DEFINITION_URL" \
+        2>&1)
+
+    ROLE_RC=$?
+
+    if [[ $ROLE_RC -ne 0 ]]; then
+
+        fail "Could not verify ${ROLE_NAME}."
+        echo -e "      ${RED}${BOLD}Microsoft Graph role query failed.${RESET}"
+        echo "      This is a query/permission problem, not proof"
+        echo "      that the role is missing."
+
+        missing "Entra ID User → ${ROLE_NAME} → Unable to verify"
+
+        return
+    fi
+
+    ROLE_ID=$(echo "$ROLE_RESPONSE" | jq -r '.value[0].id // empty')
+
+    if [[ -z "$ROLE_ID" ]]; then
+
+        fail "Could not find the ${ROLE_NAME} role definition."
+        missing "Entra ID User → ${ROLE_NAME}"
+
+        return
+    fi
+
+    # --------------------------------------------------------
+    # Check active role assignment
+    # --------------------------------------------------------
+
+    ASSIGNMENT_URL="https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$USER_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$ROLE_ID'"
+
+    ASSIGNMENT_RESPONSE=$(az rest \
+        --method GET \
+        --url "$ASSIGNMENT_URL" \
+        2>&1)
+
+    ASSIGNMENT_RC=$?
+
+    if [[ $ASSIGNMENT_RC -ne 0 ]]; then
+
+        fail "Could not verify ${ROLE_NAME}."
+        echo -e "      ${RED}${BOLD}Microsoft Graph role-assignment query failed.${RESET}"
+        echo "      This is not proof that the role is missing."
+
+        missing "Entra ID User → ${ROLE_NAME} → Unable to verify"
+
+        return
+    fi
+
+    ASSIGNMENT_COUNT=$(echo "$ASSIGNMENT_RESPONSE" | jq '.value | length')
+
+    if [[ "$ASSIGNMENT_COUNT" -gt 0 ]]; then
+
+        ok "${ROLE_NAME} assigned"
+
+    else
+
+        # ----------------------------------------------------
+        # Check PIM eligible assignment
+        # ----------------------------------------------------
+
+        ELIGIBILITY_URL="https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilitySchedules?\$filter=principalId%20eq%20'$USER_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$ROLE_ID'"
+
+        ELIGIBILITY_RESPONSE=$(az rest \
+            --method GET \
+            --url "$ELIGIBILITY_URL" \
+            2>&1)
+
+        ELIGIBILITY_RC=$?
+
+        if [[ $ELIGIBILITY_RC -eq 0 ]]; then
+
+            ELIGIBLE_COUNT=$(echo "$ELIGIBILITY_RESPONSE" | jq '.value | length')
+
+            if [[ "$ELIGIBLE_COUNT" -gt 0 ]]; then
+
+                warn "${ROLE_NAME} is PIM eligible but not currently active."
+                echo -e "      ${YELLOW}${BOLD}ACTION REQUIRED:${RESET} Activate the role in PIM before running Automated Configuration."
+
+                missing "Entra ID User → ${ROLE_NAME} → PIM role must be active"
+
+            else
+
+                fail "${ROLE_NAME} is not assigned."
+                missing "Entra ID User → ${ROLE_NAME}"
+
+            fi
+
+        else
+
+            fail "${ROLE_NAME} is not actively assigned."
+            echo "      PIM eligibility could not be checked."
+            missing "Entra ID User → ${ROLE_NAME}"
+
+        fi
+    fi
+}
+
+# ============================================================
+# [3] Entra ID User - Application Administrator
+# ============================================================
+
+check_entra_role \
+    "Application Administrator" \
+    "[3] Entra ID User - Application Administrator"
+
+# ============================================================
+# [4] Entra ID User - Privileged Role Administrator
+# ============================================================
+
+check_entra_role \
+    "Privileged Role Administrator" \
+    "[4] Entra ID User - Privileged Role Administrator"
+
+# ============================================================
+# [5] Entra ID User - Azure Owner
+# ============================================================
+
+echo
+echo "[5] Entra ID User - Azure Owner"
+echo "------------------------------------------------------------"
+
+USER_OWNER_FOUND="false"
+
+if [[ -n "$USER_OBJECT_ID" ]]; then
+
+    USER_OWNER_COUNT=$(az role assignment list \
+        --assignee-object-id "$USER_OBJECT_ID" \
+        --scope "/subscriptions/$SUBSCRIPTION_ID" \
+        --role Owner \
+        --include-inherited \
+        --all \
+        --query "length(@)" \
+        -o tsv 2>/dev/null)
+
+    if [[ "$USER_OWNER_COUNT" =~ ^[0-9]+$ ]] && [[ "$USER_OWNER_COUNT" -gt 0 ]]; then
+
+        USER_OWNER_FOUND="true"
+        ok "Entra ID User has Azure Owner on subscription"
+
+    else
+
+        warn "Azure Owner was not directly/inherited verified for the Entra ID User."
+        echo "      This does not necessarily mean the user cannot perform"
+        echo "      the required operation; PIM/delegated permissions may apply."
+
+    fi
+
+else
+
+    warn "Cannot check Azure Owner because Entra ID User was not resolved."
+
+fi
+
+# ============================================================
+# [6] FortiCNAPP App Registration
+# ============================================================
+
+echo
+echo "[6] FortiCNAPP App Registration"
+echo "------------------------------------------------------------"
+
+APP_RESPONSE=$(az ad app show --id "$APP_ID" -o json 2>/dev/null)
+APP_RC=$?
+
+APP_OBJECT_ID=""
+APP_DISPLAY_NAME=""
+
+if [[ $APP_RC -ne 0 ]]; then
+
+    fail "FortiCNAPP App Registration not found."
+    missing "FortiCNAPP App Registration → $APP_ID"
+
+else
+
+    APP_OBJECT_ID=$(echo "$APP_RESPONSE" | jq -r '.id // empty')
+    APP_DISPLAY_NAME=$(echo "$APP_RESPONSE" | jq -r '.displayName // empty')
+
+    ok "FortiCNAPP App Registration exists"
+
+    echo "      Display Name : $APP_DISPLAY_NAME"
+    echo "      Client ID    : $APP_ID"
+    echo "      Object ID    : $APP_OBJECT_ID"
+
+fi
+
+# ============================================================
+# [7] FortiCNAPP Service Principal
+# ============================================================
+
+echo
+echo "[7] FortiCNAPP Service Principal"
+echo "------------------------------------------------------------"
+
+SP_RESPONSE=$(az ad sp show --id "$APP_ID" -o json 2>/dev/null)
+SP_RC=$?
+
+SP_OBJECT_ID=""
+SP_DISPLAY_NAME=""
+
+if [[ $SP_RC -ne 0 ]]; then
+
+    fail "FortiCNAPP Service Principal not found."
+    missing "FortiCNAPP Service Principal → $APP_ID"
+
+else
+
+    SP_OBJECT_ID=$(echo "$SP_RESPONSE" | jq -r '.id // empty')
+    SP_DISPLAY_NAME=$(echo "$SP_RESPONSE" | jq -r '.displayName // empty')
+
+    ok "FortiCNAPP Service Principal exists"
+
+    echo "      Display Name : $SP_DISPLAY_NAME"
+    echo "      Object ID    : $SP_OBJECT_ID"
+
+fi
+
+# ============================================================
+# [8] Service Principal - Azure Owner
+# ============================================================
+
+echo
+echo "[8] FortiCNAPP Service Principal - Azure Owner"
+echo "------------------------------------------------------------"
+
+SP_OWNER_FOUND="false"
+
+if [[ -n "$SP_OBJECT_ID" ]]; then
+
+    SP_OWNER_COUNT=$(az role assignment list \
+        --assignee-object-id "$SP_OBJECT_ID" \
+        --scope "/subscriptions/$SUBSCRIPTION_ID" \
+        --role Owner \
+        --include-inherited \
+        --all \
+        --query "length(@)" \
+        -o tsv 2>/dev/null)
+
+    if [[ "$SP_OWNER_COUNT" =~ ^[0-9]+$ ]] && [[ "$SP_OWNER_COUNT" -gt 0 ]]; then
+
+        SP_OWNER_FOUND="true"
+        ok "Service Principal has Azure Owner on subscription"
+
+    else
+
+        fail "Service Principal does not have Azure Owner on subscription."
+        echo -e "      ${RED}${BOLD}REQUIRED / MISSING:${RESET}"
+        echo -e "      ${RED}${BOLD}FortiCNAPP Service Principal → Azure Owner${RESET}"
+
+        missing "FortiCNAPP Service Principal → Azure Owner"
+
+    fi
+
+else
+
+    fail "Cannot check Azure Owner because Service Principal was not resolved."
+    missing "FortiCNAPP Service Principal → Azure Owner"
+
+fi
+
+# ============================================================
+# Function: check SP Entra role
+# ============================================================
+
+check_sp_entra_role() {
+
+    local ROLE_NAME="$1"
+    local LABEL="$2"
+
+    echo
+    echo "$LABEL"
+    echo "------------------------------------------------------------"
+
+    if [[ -z "$SP_OBJECT_ID" ]]; then
+
+        fail "Cannot verify ${ROLE_NAME}; Service Principal was not resolved."
+        missing "FortiCNAPP Service Principal → ${ROLE_NAME}"
+        return
+
+    fi
+
+    ROLE_DEFINITION_URL="https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'$(printf '%s' "$ROLE_NAME" | sed 's/ /%20/g')'"
+
+    ROLE_RESPONSE=$(az rest \
+        --method GET \
+        --url "$ROLE_DEFINITION_URL" \
+        2>&1)
+
+    ROLE_RC=$?
+
+    if [[ $ROLE_RC -ne 0 ]]; then
+
+        fail "Could not verify ${ROLE_NAME}."
+        echo -e "      ${RED}${BOLD}Microsoft Graph role query failed.${RESET}"
+
+        missing "FortiCNAPP Service Principal → ${ROLE_NAME} → Unable to verify"
+
+        return
+    fi
+
+    ROLE_ID=$(echo "$ROLE_RESPONSE" | jq -r '.value[0].id // empty')
+
+    if [[ -z "$ROLE_ID" ]]; then
+
+        fail "Could not find the ${ROLE_NAME} role definition."
+        missing "FortiCNAPP Service Principal → ${ROLE_NAME}"
+
+        return
+    fi
+
+    ASSIGNMENT_URL="https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$SP_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$ROLE_ID'"
+
+    ASSIGNMENT_RESPONSE=$(az rest \
+        --method GET \
+        --url "$ASSIGNMENT_URL" \
+        2>&1)
+
+    ASSIGNMENT_RC=$?
+
+    if [[ $ASSIGNMENT_RC -ne 0 ]]; then
+
+        fail "Could not verify ${ROLE_NAME}."
+        echo -e "      ${RED}${BOLD}Microsoft Graph role-assignment query failed.${RESET}"
+
+        missing "FortiCNAPP Service Principal → ${ROLE_NAME} → Unable to verify"
+
+        return
+    fi
+
+    ASSIGNMENT_COUNT=$(echo "$ASSIGNMENT_RESPONSE" | jq '.value | length')
+
+    if [[ "$ASSIGNMENT_COUNT" -gt 0 ]]; then
+
+        ok "${ROLE_NAME} assigned to Service Principal"
+
+    else
+
+        fail "${ROLE_NAME} is not assigned to Service Principal."
+        echo -e "      ${RED}${BOLD}REQUIRED / MISSING:${RESET}"
+        echo -e "      ${RED}${BOLD}FortiCNAPP Service Principal → ${ROLE_NAME}${RESET}"
+
+        missing "FortiCNAPP Service Principal → ${ROLE_NAME}"
+
+    fi
+}
+
+# ============================================================
+# [9] Service Principal - Application Administrator
+# ============================================================
+
+check_sp_entra_role \
+    "Application Administrator" \
+    "[9] FortiCNAPP Service Principal - Application Administrator"
+
+# ============================================================
+# [10] Service Principal - Privileged Role Administrator
+# ============================================================
+
+check_sp_entra_role \
+    "Privileged Role Administrator" \
+    "[10] FortiCNAPP Service Principal - Privileged Role Administrator"
+
+# ============================================================
+# [11] Optional Directory Readers
+# ============================================================
+
+echo
+echo "[11] Optional - Directory Readers"
+echo "------------------------------------------------------------"
+
+DIRECTORY_READER_FOUND="false"
+
+if [[ -n "$SP_OBJECT_ID" ]]; then
+
+    DIRECTORY_READER_ROLE_RESPONSE=$(az rest \
+        --method GET \
+        --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?\$filter=displayName%20eq%20'Directory%20Readers'" \
+        2>/dev/null)
+
+    DIRECTORY_READER_ROLE_ID=$(echo "$DIRECTORY_READER_ROLE_RESPONSE" | jq -r '.value[0].id // empty')
+
+    if [[ -n "$DIRECTORY_READER_ROLE_ID" ]]; then
+
+        DIRECTORY_READER_ASSIGNMENT=$(az rest \
+            --method GET \
+            --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$filter=principalId%20eq%20'$SP_OBJECT_ID'%20and%20roleDefinitionId%20eq%20'$DIRECTORY_READER_ROLE_ID'" \
+            2>/dev/null)
+
+        DIRECTORY_READER_COUNT=$(echo "$DIRECTORY_READER_ASSIGNMENT" | jq '.value | length' 2>/dev/null)
+
+        if [[ "$DIRECTORY_READER_COUNT" -gt 0 ]]; then
+
+            DIRECTORY_READER_FOUND="true"
+            ok "Directory Readers assigned"
+
+        else
+
+            warn "Directory Readers not assigned."
+            echo "      Optional unless Entra ID user/group/member/app"
+            echo "      registration collection is required."
+
+        fi
+
+    else
+
+        warn "Could not verify optional Directory Readers role."
+
+    fi
+
+else
+
+    warn "Cannot check Directory Readers because Service Principal was not resolved."
+
+fi
+
+# ============================================================
+# [12] REQUIRED / MISSING
+# ============================================================
+
+echo
+echo "[12] REQUIRED / MISSING"
+echo "------------------------------------------------------------"
 
 if [[ ${#REQUIRED_MISSING[@]} -eq 0 ]]; then
 
-    echo
-    echo -e "${GREEN}${BOLD}✔ NONE${RESET}"
-    echo
-    echo -e "${GREEN}${BOLD}All required FortiCNAPP prerequisites are present.${RESET}"
+    echo -e "  ${GREEN}${BOLD}✔ No required prerequisites are currently missing.${RESET}"
 
 else
 
-    echo
-
-    for item in "${REQUIRED_MISSING[@]}"; do
-        echo -e "  ${RED}${BOLD}✘ $item${RESET}"
+    for ITEM in "${REQUIRED_MISSING[@]}"; do
+        echo -e "  ${RED}${BOLD}✘ ${ITEM}${RESET}"
     done
 
 fi
 
 # ============================================================
-# 13. GENERATE JSON REPORT
+# [13] Generate JSON report
 # ============================================================
 
-TIMESTAMP=$(date --iso-8601=seconds 2>/dev/null || date)
+echo
+echo "[13] Generate JSON Report"
+echo "------------------------------------------------------------"
 
-if [[ "$FAIL_COUNT" -eq 0 ]]; then
-    OVERALL_STATUS="PASSED"
-else
-    OVERALL_STATUS="FAILED"
+OVERALL_STATUS="PASS"
+
+if [[ "$FAIL_COUNT" -gt 0 ]]; then
+    OVERALL_STATUS="FAIL"
+elif [[ "$WARN_COUNT" -gt 0 ]]; then
+    OVERALL_STATUS="WARN"
 fi
 
-# Build missing JSON array safely
-MISSING_JSON="[]"
+MISSING_JSON=$(printf '%s\n' "${REQUIRED_MISSING[@]}" | jq -R . | jq -s .)
 
-if [[ ${#REQUIRED_MISSING[@]} -gt 0 ]]; then
-    MISSING_JSON=$(printf '%s\n' "${REQUIRED_MISSING[@]}" | jq -R . | jq -s .)
+if [[ -z "$MISSING_JSON" ]]; then
+    MISSING_JSON="[]"
 fi
 
 jq -n \
-    --arg timestamp "$TIMESTAMP" \
+    --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     --arg status "$OVERALL_STATUS" \
     --arg tenant_id "$TENANT_ID" \
-    --arg subscription_id "$SUB_ID" \
-    --arg subscription_name "$SUB_NAME" \
-    --arg user "$USER_NAME" \
-    --arg user_object_id "${USER_ID:-}" \
+    --arg subscription_id "$SUBSCRIPTION_ID" \
+    --arg subscription_name "$CURRENT_SUBSCRIPTION_NAME" \
+    --arg user "$USER_UPN" \
+    --arg user_display_name "$USER_DISPLAY_NAME" \
+    --arg user_object_id "$USER_OBJECT_ID" \
     --arg app_display_name "$APP_DISPLAY_NAME" \
-    --arg client_id "$APP_ID" \
+    --arg app_client_id "$APP_ID" \
     --arg app_object_id "$APP_OBJECT_ID" \
+    --arg sp_display_name "$SP_DISPLAY_NAME" \
     --arg sp_object_id "$SP_OBJECT_ID" \
-    --arg sp_name "$SP_NAME" \
-    --argjson user_application_administrator "$USER_APP_ADMIN" \
-    --argjson user_privileged_role_administrator "$USER_PRA" \
-    --argjson app_azure_owner "$APP_OWNER" \
-    --argjson app_application_administrator "$APP_APP_ADMIN" \
-    --argjson app_privileged_role_administrator "$APP_PRA" \
-    --argjson app_directory_reader "$APP_DIRECTORY_READER" \
+    --argjson user_owner "$USER_OWNER_FOUND" \
+    --argjson sp_owner "$SP_OWNER_FOUND" \
+    --argjson directory_reader "$DIRECTORY_READER_FOUND" \
     --argjson successful_checks "$PASS_COUNT" \
     --argjson failed_checks "$FAIL_COUNT" \
     --argjson warnings "$WARN_COUNT" \
-    --argjson missing "$MISSING_JSON" \
+    --argjson required_missing "$MISSING_JSON" \
 '
 {
   timestamp: $timestamp,
@@ -498,33 +722,35 @@ jq -n \
   },
 
   entra_id_user: {
-    user: $user,
+    display_name: $user_display_name,
+    user_principal_name: $user,
     object_id: $user_object_id,
 
     required_roles: {
-      application_administrator: $user_application_administrator,
-      privileged_role_administrator: $user_privileged_role_administrator
+      application_administrator: "checked",
+      privileged_role_administrator: "checked",
+      azure_owner: $user_owner
     }
   },
 
   forticnapp_app_registration: {
     display_name: $app_display_name,
-    client_id: $client_id,
+    client_id: $app_client_id,
     application_object_id: $app_object_id,
 
     service_principal: {
-      name: $sp_name,
+      display_name: $sp_display_name,
       object_id: $sp_object_id
     },
 
     required_permissions: {
-      azure_owner: $app_azure_owner,
-      application_administrator: $app_application_administrator,
-      privileged_role_administrator: $app_privileged_role_administrator
+      azure_owner: $sp_owner,
+      application_administrator: "checked",
+      privileged_role_administrator: "checked"
     },
 
     optional_permissions: {
-      directory_reader: $app_directory_reader
+      directory_readers: $directory_reader
     }
   },
 
@@ -534,77 +760,47 @@ jq -n \
     warnings: $warnings
   },
 
-  required_missing: $missing
+  required_missing: $required_missing
 }
 ' > "$REPORT_FILE"
 
-# ============================================================
-# 14. FINAL SUMMARY
-# ============================================================
-
-echo
-echo "============================================================"
-echo " PRE-FLIGHT SUMMARY"
-echo "============================================================"
-
-echo
-echo -e "  ${GREEN}✔ Successful checks : $PASS_COUNT${RESET}"
-echo -e "  ${RED}✘ Failed checks     : $FAIL_COUNT${RESET}"
-echo -e "  ${YELLOW}⚠ Warnings          : $WARN_COUNT${RESET}"
-
-echo
-echo "------------------------------------------------------------"
-echo " Entra ID User"
-echo "------------------------------------------------------------"
-echo "  $USER_NAME"
-
-echo
-echo "  Required:"
-echo "    Application Administrator"
-echo "    Privileged Role Administrator"
-
-echo
-echo "------------------------------------------------------------"
-echo " FortiCNAPP App Registration / Service Principal"
-echo "------------------------------------------------------------"
-echo "  Name      : $APP_DISPLAY_NAME"
-echo "  Client ID : $APP_ID"
-echo "  SP Object : $SP_OBJECT_ID"
-
-echo
-echo "  Required:"
-echo "    Azure Owner"
-echo "    Application Administrator"
-echo "    Privileged Role Administrator"
-
-echo
-echo "------------------------------------------------------------"
-echo " JSON REPORT"
-echo "------------------------------------------------------------"
-
-if [[ -f "$REPORT_FILE" ]]; then
-    echo -e "  ${GREEN}✔ Generated:${RESET} $REPORT_FILE"
+if [[ $? -eq 0 ]]; then
+    ok "Generated $REPORT_FILE"
 else
-    echo -e "  ${RED}✘ Failed to generate:${RESET} $REPORT_FILE"
+    fail "Could not generate $REPORT_FILE"
 fi
 
+# ============================================================
+# [14] Final Summary
+# ============================================================
+
 echo
 echo "============================================================"
+echo " FortiCNAPP Azure Integration Preflight Summary"
+echo "============================================================"
+
+echo "  Successful checks : $PASS_COUNT"
+echo "  Failed checks     : $FAIL_COUNT"
+echo "  Warnings          : $WARN_COUNT"
+
+echo
 
 if [[ "$FAIL_COUNT" -eq 0 ]]; then
 
-    echo
-    echo -e "${GREEN}${BOLD}✔ PRE-FLIGHT PASSED${RESET}"
-    echo -e "${GREEN}All required FortiCNAPP prerequisites are present.${RESET}"
+    if [[ "$WARN_COUNT" -eq 0 ]]; then
+        echo -e "  ${GREEN}${BOLD}✔ PRECHECK PASSED${RESET}"
+    else
+        echo -e "  ${YELLOW}${BOLD}⚠ PRECHECK PASSED WITH WARNINGS${RESET}"
+    fi
 
 else
 
-    echo
-    echo -e "${RED}${BOLD}✘ PRE-FLIGHT FAILED${RESET}"
-    echo -e "${RED}Review the REQUIRED / MISSING section above.${RESET}"
+    echo -e "  ${RED}${BOLD}✘ PRECHECK FAILED${RESET}"
 
 fi
 
 echo
-echo "============================================================"
+echo "  JSON report: $REPORT_FILE"
 echo
+echo "  The report does not contain client secrets or credentials."
+echo "============================================================"
