@@ -136,9 +136,10 @@ echo "Testing Lacework API credentials..."
 LACEWORK_PROFILE="forticnapp"
 LACEWORK_API_URL="https://${LW_ACCOUNT}.lacework.net"
 
-# Test API access via curl
+# Test API access via curl (proper Lacework authentication)
 RESPONSE=$(curl -s -X POST "${LACEWORK_API_URL}/api/v2/access/tokens" \
   -H "Content-Type: application/json" \
+  -H "X-LW-UAKS: ${LW_API_SECRET}" \
   -d '{"keyId":"'"${LW_API_KEY}"'","expiryTime":3600}' \
   2>&1)
 
@@ -146,7 +147,7 @@ if echo "$RESPONSE" | grep -q "access_token"; then
     echo "✓ Lacework API: OK"
 else
     echo "⚠ Could not validate Lacework credentials via API"
-    echo "  Response: $(echo "$RESPONSE" | head -c 100)"
+    echo "  Response: $(echo "$RESPONSE" | head -c 150)"
     echo "  Proceeding — Terraform will catch credential errors during init"
 fi
 
@@ -177,6 +178,24 @@ TFEOF
 
 # variables.tf
 cat > variables.tf <<'TFEOF'
+variable "lacework_account" {
+  type        = string
+  description = "FortiCNAPP/Lacework account name (e.g., 'myaccount' from myaccount.lacework.net)"
+  sensitive   = true
+}
+
+variable "lacework_api_key" {
+  type        = string
+  description = "FortiCNAPP/Lacework API key"
+  sensitive   = true
+}
+
+variable "lacework_api_secret" {
+  type        = string
+  description = "FortiCNAPP/Lacework API secret"
+  sensitive   = true
+}
+
 variable "azure_subscription_id" {
   type        = string
   description = "Azure Subscription ID where agentless scanning will be deployed"
@@ -226,6 +245,7 @@ provider "azurerm" {
 }
 
 # Lacework Provider Configuration
+# References credentials from .lacework.toml [forticnapp] profile
 provider "lacework" {
   profile = "forticnapp"
 }
@@ -284,14 +304,19 @@ output "region" {
 }
 TFEOF
 
-# terraform.tfvars
+# terraform.tfvars (with Lacework credentials)
 cat > terraform.tfvars <<TFEOF
+lacework_account      = "$LW_ACCOUNT"
+lacework_api_key      = "$LW_API_KEY"
+lacework_api_secret   = "$LW_API_SECRET"
 azure_subscription_id = "$AZ_SUBSCRIPTION_ID"
 azure_tenant_id       = "$AZ_TENANT_ID"
 azure_region          = "$AZ_REGION"
 resource_group_name   = "$RG_NAME"
 integration_name      = "$INTEGRATION_NAME"
 TFEOF
+
+chmod 600 terraform.tfvars  # Protect credentials file
 
 # ------------------------------------------------
 # Create .lacework.toml credentials file
