@@ -29,8 +29,8 @@ read -rp "Azure Subscription ID: " AZ_SUBSCRIPTION_ID
 read -rp "Azure region [canadacentral]: " AZ_REGION
 AZ_REGION=${AZ_REGION:-canadacentral}
 
-read -rp "Scanning Resource Group [mycnapprg]: " RG_NAME
-RG_NAME=${RG_NAME:-mycnapprg}
+read -rp "Scanning Resource Group [FFHAZCRGFORTICNAPP]: " RG_NAME
+RG_NAME=${RG_NAME:-FFHAZCRGFORTICNAPP}
 
 read -rp "FortiCNAPP integration name [az_forticnapp_agentless]: " INTEGRATION_NAME
 INTEGRATION_NAME=${INTEGRATION_NAME:-az_forticnapp_agentless}
