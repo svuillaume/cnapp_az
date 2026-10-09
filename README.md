@@ -21,7 +21,9 @@
 
 ## Terraform 
 
-Terraform does not care which specific terminal or computer you use, as long as it has access to two critical things:
+This is optional if you have access the .tf and .tfstate in the root repo
+
+Here are the pre requisites:
 1. The exact same Terraform configuration files (.tf files).
 2. The same backend or state file (terraform.tfstate) that tracks your infrastructure.
 Here is how you can do it safely depending on how your state file is managed:
