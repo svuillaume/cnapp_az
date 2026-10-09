@@ -1,389 +1,265 @@
-<div align="center">
+# 🖥️ Running `tf2html.sh` from Another Computer or Terminal
 
-# 🔐 FortiCNAPP Terraform Provider — Authentication Guide
+**Generate the Azure resource inventory from any machine that has the Terraform configuration, the state, and backend access**
 
-**Securely authenticate the `lacework` Terraform provider for FortiCNAPP deployments**
+![Bash](https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white)
+![Terraform](https://img.shields.io/badge/Terraform-show_--json-7B42BC?style=for-the-badge&logo=terraform&logoColor=white)
+![Azure](https://img.shields.io/badge/Azure-Resources-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)
+![FortiCNAPP](https://img.shields.io/badge/FortiCNAPP-Scoping_Input-DA291C?style=for-the-badge&logo=fortinet&logoColor=white)
 
-![Terraform](https://img.shields.io/badge/Terraform-Provider-7B42BC?style=for-the-badge&logo=terraform&logoColor=white)
-![FortiCNAPP](https://img.shields.io/badge/FortiCNAPP-Lacework-DA291C?style=for-the-badge&logo=fortinet&logoColor=white)
-![Security](https://img.shields.io/badge/Secrets-Never_in_Git-2EA043?style=for-the-badge&logo=git&logoColor=white)
-
-[Overview](#-overview) •
-[.lacework.toml](#1️⃣-laceworktoml) •
-[LW_* Env Vars](#2️⃣-lw_-environment-variables) •
-[Terraform Variables](#3️⃣-terraform-variables) •
-[Security](#-security) •
-[Quick Reference](#-quick-reference)
-
-</div>
+[What You Need](#-what-you-need) • [Remote Backend](#1️⃣-scenario-a--remote-backend-recommended) • [Local State](#2️⃣-scenario-b--local-state-file) • [Report-Only Host](#3️⃣-scenario-c--report-only-host) • [Safety](#️-safety-checklist) • [Quick Reference](#-quick-reference)
 
 ---
 
-## Terraform 
+Terraform does not depend on a specific computer or terminal. You can generate the inventory from another machine, provided you have the correct Terraform configuration, access to the same state, and the required backend permissions.
 
-This is optional if you have access the .tf and .tfstate in the root repo
-
-Here are the pre requisites:
-1. The exact same Terraform configuration files (.tf files).
-2. The same backend or state file (terraform.tfstate) that tracks your infrastructure.
-Here is how you can do it safely depending on how your state file is managed:
-
-Scenario A: You use a Cloud Console (Recommended)
-
-If your project is configured with a remote backend like AWS S3, HashiCorp Cloud, Azure Blob Storage, or Google Cloud Storage:
-• Step 1: Clone or copy your Terraform configuration files to the new console.
-• Step 2: Run terraform init. This connects the new console to the remote state file.
-• Step 3: Run terraform destroy.
-
-Scenario B: You use a Local State File
-
-If your state file is stored locally (terraform.tfstate) on the original machine:
-• Step 1: Copy your project directory including the terraform.tfstate file to the new console.
-• Step 2: Run terraform init on the new console.
-• Step 3: Run terraform destroy.
-(Note: If you do not copy the terraform.tfstate file, the new console will think no infrastructure exists and will have nothing to destroy.)
-
-## 📋 Overview
-
-The FortiCNAPP Terraform provider (`lacework`) supports several ways to supply credentials. Pick the one that matches where Terraform runs.
-
-| # | Method | Credentials Source | Provider Block | Best For |
-|:-:|--------|--------------------|----------------|----------|
-| **1** | `.lacework.toml` | `~/.lacework.toml` | `provider "lacework" {}` | 💻 Local development |
-| **2** | `LW_*` env vars | Shell / CI environment | `provider "lacework" {}` | ⚙️ CI/CD, temporary auth |
-| **3A** | `TF_VAR_*` env vars | Shell / CI environment | `var.lw_*` | 🤖 Terraform automation |
-| **3B** | `terraform.tfvars` | File in project | `var.lw_*` | 🧪 Local Terraform testing |
+`tf2html.sh` reads the output of `terraform show -json`, not a raw `terraform.tfstate`. Generating that output only reads the state. It does not change or destroy any infrastructure.
 
 > [!CAUTION]
-> **Never commit API keys, API secrets, or other credentials to Git.**
+> **Do not run `terraform destroy` or `terraform apply`.** They change your Azure resources, and the inventory does not need them.
+
+---
+
+## 📋 What You Need
+
+| # | Requirement | Details |
+| --- | --- | --- |
+| **1** | **Terraform configuration files** | The same `.tf` files that define the infrastructure, plus `.terraform.lock.hcl` and any variable files |
+| **2** | **Terraform state** | Local `terraform.tfstate` or a remote backend |
+| **3** | **Backend access** | Read permission on the remote state, if you use one. Access to the Azure resources themselves is not needed |
+| **4** | **Tools** | Terraform, Bash, `jq` (`column` is optional) |
 
 ```mermaid
 flowchart LR
-    subgraph Direct["Read directly by the provider"]
-        A["~/.lacework.toml"]
-        B["LW_ACCOUNT<br/>LW_API_KEY<br/>LW_API_SECRET"]
+    subgraph IN["Inputs"]
+        C[".tf files"]
+        S["State<br/>local or remote backend"]
     end
-    subgraph TF["Resolved by Terraform first"]
-        C["TF_VAR_lw_*"]
-        D["terraform.tfvars"]
-        V["var.lw_account<br/>var.lw_api_key<br/>var.lw_api_secret"]
-        C --> V
-        D --> V
-    end
-    A --> P(["🛡️ Lacework Provider"])
-    B --> P
-    V --> P
-    P --> F[("FortiCNAPP API")]
+    C --> I["terraform init"]
+    S --> I
+    I --> J["terraform show -json<br/>tfstate.json"]
+    J --> T(["🛡️ tf2html.sh"])
+    T --> O1["🖥️ Terminal table"]
+    T --> O2["📄 HTML report"]
 
-    style P fill:#DA291C,color:#fff,stroke:#DA291C
-    style F fill:#24292f,color:#fff
+    style T fill:#0078D4,color:#fff,stroke:#0078D4
+    style O2 fill:#24292f,color:#fff
 ```
 
 ---
 
-## 1️⃣ `.lacework.toml`
+## 🎯 Choose Your Scenario
 
-The Lacework / FortiCNAPP CLI stores credentials in your home directory — **outside** the Terraform project.
+| Scenario | State Location | Machine Needs | Best For |
+| --- | --- | --- | --- |
+| **A** | ☁️ Remote backend | Terraform, `.tf` files, backend access | 👥 Teams, recommended |
+| **B** | 💻 Local `terraform.tfstate` | Terraform, `.tf` files, the state file | 🧪 Single-user projects |
+| **C** | 📄 Exported `tfstate.json` | Bash and `jq` only | 🖥️ Report-only hosts |
 
-**`~/.lacework.toml`**
+---
 
-```toml
-[default]
-account    = "YOUR_ACCOUNT"
-api_key    = "YOUR_API_KEY"
-api_secret = "YOUR_API_SECRET"
-```
+## 1️⃣ Scenario A · Remote Backend (Recommended)
 
-**Provider**
+If your project uses a remote backend, such as Azure Blob Storage, AWS S3, Google Cloud Storage, or HCP Terraform, the state is stored remotely rather than solely on your computer.
 
-```hcl
-provider "lacework" {}
-```
+**Step 1 · Copy or clone the project**
 
-**Run**
+Obtain the same Terraform configuration files (`.tf`) and any required variable files.
+
+**Step 2 · Sign in to the backend**
+
+For Azure Blob Storage, run `az login` (or set the `ARM_*` environment variables).
+
+**Step 3 · Initialize Terraform**
 
 ```bash
 terraform init
-terraform plan
+```
+
+This initializes the working directory and configures access to the remote backend.
+
+**Step 4 · Verify the target infrastructure**
+
+```bash
+terraform workspace show
+terraform state list
+```
+
+Confirm that you are using the correct workspace and that the expected resources are listed.
+
+**Step 5 · Export the report input**
+
+```bash
+terraform show -json > tfstate.json
+```
+
+**Step 6 · Run the script**
+
+```bash
+./tf2html.sh tfstate.json azure_inventory.html
+```
+
+> [!IMPORTANT]
+> Ensure the new machine has the necessary backend permissions. Do not run `terraform init -migrate-state` unless you intentionally want to migrate the state.
+
+---
+
+## 2️⃣ Scenario B · Local State File
+
+If Terraform stores its state locally in `terraform.tfstate`, that file must be available on the new machine.
+
+**Step 1 · Copy the project**
+
+Transfer the Terraform configuration files and the correct `terraform.tfstate` file. Include any required variable files and `.terraform.lock.hcl`.
+
+**Step 2 · Initialize Terraform**
+
+```bash
+terraform init
+```
+
+This initializes the working directory and installs the providers.
+
+**Step 3 · Verify the state**
+
+```bash
+terraform state list
+```
+
+Confirm that the expected resources appear in the state.
+
+**Step 4 · Export the report input**
+
+```bash
+terraform show -json > tfstate.json
+```
+
+**Step 5 · Run the script**
+
+```bash
+./tf2html.sh tfstate.json azure_inventory.html
+```
+
+> [!WARNING]
+> Without the correct state file, Terraform does not know which resources it manages, and the report comes out empty. Do not continue until `terraform state list` shows your resources.
+
+---
+
+## 3️⃣ Scenario C · Report-Only Host
+
+If the new machine only needs to run the report and not Terraform, export the JSON where the configuration and state already are, then move only that file.
+
+**Step 1 · On the original machine**
+
+```bash
+terraform show -json > tfstate.json
+```
+
+**Step 2 · Copy the files to the new machine**
+
+```bash
+scp tfstate.json tf2html.sh user@new-host:~/
+```
+
+Use `scp` or another encrypted channel, not Git.
+
+**Step 3 · Run the script**
+
+```bash
+./tf2html.sh tfstate.json azure_inventory.html
 ```
 
 > [!TIP]
-> Working with several tenants? Add more `[profile]` sections to the file and select one with the provider's `profile` argument or the `LW_PROFILE` environment variable.
-
-> [!WARNING]
-> Never copy `.lacework.toml` into a repository. Add it to `.gitignore` as a safety net:
-> ```gitignore
-> .lacework.toml
-> ```
+> This machine only needs Bash and `jq`. No `.tf` files, `terraform init`, or Azure login are needed.
 
 ---
 
-## 2️⃣ `LW_*` Environment Variables
+## 🛡️ Safety Checklist
 
-The provider reads these variables **directly** — nothing goes into Terraform configuration files.
+Before running the script, verify that:
 
-<table>
-<tr><th>🐧 Linux / 🍎 macOS</th><th>🪟 Windows PowerShell</th></tr>
-<tr>
-<td>
+- [ ] You have the correct Terraform configuration files
+- [ ] Terraform is connected to the correct backend and workspace
+- [ ] The state contains the expected resources (`terraform state list`)
+- [ ] The JSON is the right format (the command below prints `true`)
+- [ ] You have backed up the raw `terraform.tfstate` if the state is local
+- [ ] State and `show -json` output are kept out of Git and shared folders
 
 ```bash
-export LW_ACCOUNT="YOUR_ACCOUNT"
-export LW_API_KEY="YOUR_API_KEY"
-export LW_API_SECRET="YOUR_API_SECRET"
+jq 'has("values") and (.values | has("root_module"))' tfstate.json
 ```
-
-</td>
-<td>
-
-```powershell
-$env:LW_ACCOUNT="YOUR_ACCOUNT"
-$env:LW_API_KEY="YOUR_API_KEY"
-$env:LW_API_SECRET="YOUR_API_SECRET"
-```
-
-</td>
-</tr>
-</table>
-
-**Provider**
-
-```hcl
-provider "lacework" {}
-```
-
-**Run**
-
-```bash
-terraform init
-terraform plan
-```
-
-**✅ Use this method for**
-
-- CI/CD pipelines
-- Automation
-- Temporary authentication
-- Keeping credentials out of Terraform configuration files
-
----
-
-## 3️⃣ Terraform Variables
-
-Terraform can also receive credentials as input variables — either from the environment (**3A**) or from a file (**3B**). Both populate the same variables:
-
-`var.lw_account` · `var.lw_api_key` · `var.lw_api_secret`
-
-### Shared configuration (3A and 3B)
-
-<details open>
-<summary><b>📄 <code>variables.tf</code></b></summary>
-
-```hcl
-variable "lw_account" {
-  type      = string
-  sensitive = true
-}
-
-variable "lw_api_key" {
-  type      = string
-  sensitive = true
-}
-
-variable "lw_api_secret" {
-  type      = string
-  sensitive = true
-}
-```
-
-</details>
-
-<details open>
-<summary><b>📄 <code>provider.tf</code></b></summary>
-
-```hcl
-provider "lacework" {
-  account    = var.lw_account
-  api_key    = var.lw_api_key
-  api_secret = var.lw_api_secret
-}
-```
-
-</details>
-
-### 3A · `TF_VAR_*` Environment Variables
-
-Terraform automatically maps any environment variable prefixed with `TF_VAR_` to the matching input variable.
-
-```bash
-export TF_VAR_lw_account="YOUR_ACCOUNT"
-export TF_VAR_lw_api_key="YOUR_API_KEY"
-export TF_VAR_lw_api_secret="YOUR_API_SECRET"
-
-terraform init
-terraform plan
-```
-
-| Environment Variable | ➜ | Terraform Variable |
-|----------------------|:-:|--------------------|
-| `TF_VAR_lw_account` | ➜ | `var.lw_account` |
-| `TF_VAR_lw_api_key` | ➜ | `var.lw_api_key` |
-| `TF_VAR_lw_api_secret` | ➜ | `var.lw_api_secret` |
-
-### 3B · `terraform.tfvars`
-
-Terraform loads `terraform.tfvars` automatically on `terraform plan` and `terraform apply`.
-
-```hcl
-# terraform.tfvars
-lw_account    = "YOUR_ACCOUNT"
-lw_api_key    = "YOUR_API_KEY"
-lw_api_secret = "YOUR_API_SECRET"
-```
-
-> [!WARNING]
-> If `terraform.tfvars` contains credentials, add it to `.gitignore`.
-
----
-
-## 🔀 Key Difference: `LW_*` vs `TF_VAR_*`
-
-```mermaid
-flowchart LR
-    L["LW_API_KEY"] -->|read directly| P1(["Lacework Provider"])
-
-    T["TF_VAR_lw_api_key"] -->|mapped by| TF1["Terraform"] --> V1["var.lw_api_key"] --> P2(["Lacework Provider"])
-
-    F["terraform.tfvars"] -->|loaded by| TF2["Terraform"] --> V2["var.lw_api_key"] --> P3(["Lacework Provider"])
-
-    style P1 fill:#DA291C,color:#fff,stroke:#DA291C
-    style P2 fill:#DA291C,color:#fff,stroke:#DA291C
-    style P3 fill:#DA291C,color:#fff,stroke:#DA291C
-```
-
-| | `LW_*` | `TF_VAR_*` / `terraform.tfvars` |
-|---|---|---|
-| **Who reads it** | The provider | Terraform core |
-| **Provider block** | Empty — `provider "lacework" {}` | Must reference `var.lw_*` |
-| **Needs `variables.tf`** | ❌ No | ✅ Yes |
-
----
-
-## 🛡️ Security
-
-### ❌ Do not hard-code credentials
-
-```hcl
-# main.tf — DON'T DO THIS
-provider "lacework" {
-  account    = "MY_ACCOUNT"
-  api_key    = "MY_API_KEY"
-  api_secret = "MY_SECRET"
-}
-```
-
-Supply credentials through one of the supported methods above instead.
 
 ### ✅ Recommended `.gitignore`
 
-```gitignore
-# Lacework credentials
-.lacework.toml
-
-# Terraform variables containing credentials
-terraform.tfvars
-
-# Terraform state
+```
+# Terraform state and exports (may contain secrets)
 *.tfstate
 *.tfstate.*
+tfstate.json
+
+# Generated reports
+azure_inventory.html
+azure_resources.html
 
 # Terraform working directory
 .terraform/
 ```
 
 > [!IMPORTANT]
-> `sensitive = true` only **hides** a value from normal CLI output — it does **not encrypt** it. Treat `terraform.tfvars` and Terraform state files as sensitive whenever they contain credentials.
+> State and `show -json` output can contain secrets in plain text. Copy them with `scp` or an encrypted channel, never by email, chat, or Git.
 
 ---
 
-## 🎯 Recommended Usage
+## 🔀 Key Difference: Raw State vs `show -json`
 
-| Scenario | Recommended Method | Why |
-|----------|--------------------|-----|
-| 💻 **Local development** | `~/.lacework.toml` | Credentials stay outside the project |
-| ⚙️ **CI/CD & automation** | `LW_*` or `TF_VAR_*` | Injected from the pipeline's secret store; choose based on how your CI system manages Terraform variables |
-| 🧪 **Local Terraform testing** | `terraform.tfvars` | Explicit variable values — keep it out of Git |
+| | `terraform.tfstate` (raw) | `terraform show -json` |
+| --- | --- | --- |
+| **Read by** | Terraform | `tf2html.sh` |
+| **Works with `tf2html.sh`** | ❌ No (empty report) | ✅ Yes |
+| **Use for** | `plan`, `apply`, backups | Reports and inventory |
+
+---
+
+## 🎯 Key Takeaway
+
+Changing computers or terminals does not change the infrastructure Terraform manages. The configuration, state, backend, and workspace determine which resources Terraform can report on.
+
+A remote backend is generally safer for collaborative environments because it centralizes state and can provide state locking. With local state, you must securely transfer and preserve the correct state file.
 
 ---
 
 ## ⚡ Quick Reference
 
-<details>
-<summary><b>Option 1 — <code>.lacework.toml</code></b></summary>
-
-```hcl
-# Credentials in ~/.lacework.toml
-provider "lacework" {}
-```
-
-</details>
-
-<details>
-<summary><b>Option 2 — <code>LW_*</code> environment variables</b></summary>
+**Scenario A — remote backend**
 
 ```bash
-export LW_ACCOUNT="YOUR_ACCOUNT"
-export LW_API_KEY="YOUR_API_KEY"
-export LW_API_SECRET="YOUR_API_SECRET"
+az login
+terraform init
+terraform show -json > tfstate.json
+./tf2html.sh tfstate.json azure_inventory.html
 ```
 
-```hcl
-provider "lacework" {}
-```
-
-</details>
-
-<details>
-<summary><b>Option 3A — <code>TF_VAR_*</code> environment variables</b></summary>
+**Scenario B — local state**
 
 ```bash
-export TF_VAR_lw_account="YOUR_ACCOUNT"
-export TF_VAR_lw_api_key="YOUR_API_KEY"
-export TF_VAR_lw_api_secret="YOUR_API_SECRET"
+# project copied with terraform.tfstate
+terraform init
+terraform show -json > tfstate.json
+./tf2html.sh tfstate.json azure_inventory.html
 ```
 
-```hcl
-provider "lacework" {
-  account    = var.lw_account
-  api_key    = var.lw_api_key
-  api_secret = var.lw_api_secret
-}
+**Scenario C — report-only host**
+
+```bash
+# on the original machine
+terraform show -json > tfstate.json
+scp tfstate.json tf2html.sh user@new-host:~/
+
+# on the new host (Bash and jq only)
+./tf2html.sh tfstate.json azure_inventory.html
 ```
-
-</details>
-
-<details>
-<summary><b>Option 3B — <code>terraform.tfvars</code></b></summary>
-
-```hcl
-# terraform.tfvars
-lw_account    = "YOUR_ACCOUNT"
-lw_api_key    = "YOUR_API_KEY"
-lw_api_secret = "YOUR_API_SECRET"
-```
-
-```hcl
-provider "lacework" {
-  account    = var.lw_account
-  api_key    = var.lw_api_key
-  api_secret = var.lw_api_secret
-}
-```
-
-</details>
 
 ---
 
-<div align="center">
-<sub>🔒 Keep secrets out of source control · Treat state as sensitive · Rotate API keys regularly</sub>
-</div>
+🔒 Use `terraform show -json`, not raw state · Never destroy to inventory · Keep state out of Git
+
