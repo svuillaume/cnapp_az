@@ -28,7 +28,7 @@ Here are the pre requisites:
 2. The same backend or state file (terraform.tfstate) that tracks your infrastructure.
 Here is how you can do it safely depending on how your state file is managed:
 
-Scenario A: You use a Remote Backend (Recommended)
+Scenario A: You use a Cloud Console (Recommended)
 
 If your project is configured with a remote backend like AWS S3, HashiCorp Cloud, Azure Blob Storage, or Google Cloud Storage:
 • Step 1: Clone or copy your Terraform configuration files to the new console.
