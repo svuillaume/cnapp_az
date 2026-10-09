@@ -19,6 +19,28 @@
 
 ---
 
+## Terraform 
+
+Terraform does not care which specific terminal or computer you use, as long as it has access to two critical things:
+1. The exact same Terraform configuration files (.tf files).
+2. The same backend or state file (terraform.tfstate) that tracks your infrastructure.
+Here is how you can do it safely depending on how your state file is managed:
+
+Scenario A: You use a Remote Backend (Recommended)
+
+If your project is configured with a remote backend like AWS S3, HashiCorp Cloud, Azure Blob Storage, or Google Cloud Storage:
+• Step 1: Clone or copy your Terraform configuration files to the new console.
+• Step 2: Run terraform init. This connects the new console to the remote state file.
+• Step 3: Run terraform destroy.
+
+Scenario B: You use a Local State File
+
+If your state file is stored locally (terraform.tfstate) on the original machine:
+• Step 1: Copy your project directory including the terraform.tfstate file to the new console.
+• Step 2: Run terraform init on the new console.
+• Step 3: Run terraform destroy.
+(Note: If you do not copy the terraform.tfstate file, the new console will think no infrastructure exists and will have nothing to destroy.)
+
 ## 📋 Overview
 
 The FortiCNAPP Terraform provider (`lacework`) supports several ways to supply credentials. Pick the one that matches where Terraform runs.
